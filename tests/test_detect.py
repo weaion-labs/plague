@@ -115,6 +115,38 @@ def test_hcaptcha_sitekey_and_solvable():
     assert challenge.sitekey == "HCAP_KEY"
 
 
+def test_uuid_sitekey_switches_vendor_to_hcaptcha():
+    sitekey = "58366d97-3e8c-4b57-a679-4a41c8423be3"
+    html = (
+        '<html><body><div class="g-recaptcha" data-sitekey="'
+        + sitekey
+        + '"></div></body></html>'
+    )
+    challenge = detect(
+        status=403, url="https://blocked.test/", headers={}, html=html
+    )
+    assert challenge is not None
+    assert challenge.vendor == "hcaptcha"
+    assert challenge.kind is ChallengeKind.TOKEN
+    assert challenge.solvable is True
+    assert challenge.sitekey == sitekey
+
+
+def test_turnstile_test_key_stays_turnstile():
+    sitekey = "1x00000000000000000000AA"
+    html = (
+        '<html><body><div class="cf-turnstile" data-sitekey="'
+        + sitekey
+        + '"></div></body></html>'
+    )
+    challenge = detect(
+        status=403, url="https://blocked.test/", headers={}, html=html
+    )
+    assert challenge is not None
+    assert challenge.vendor == "cloudflare_turnstile"
+    assert challenge.sitekey == sitekey
+
+
 def test_turnstile_sitekey_and_solvable():
     html = (
         '<html><body><div class="cf-turnstile" data-sitekey="TURN_KEY"></div>'

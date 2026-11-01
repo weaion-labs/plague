@@ -23,9 +23,10 @@ from rich.table import Table
 from . import __version__
 from .challenge import SolverError
 from .config import Config, project_cache_dir
+from .fingerprint import collect as collect_fingerprint
 from .install import InstallError, install_lightpanda
 from .models import Action, Attempt, Tier
-from .router import Plague, PlagueError
+from .router import CHAINS, Plague, PlagueError
 from .serialize import error_dict, probe_dict, result_dict
 
 console = Console()
@@ -60,6 +61,7 @@ def _config(
     humanize: bool | None = None,
     timeout: int | None = None,
     geoip: bool | None = None,
+    solve_present: bool | None = None,
 ) -> Config:
     config = Config.from_env()
     if solver:
@@ -74,6 +76,8 @@ def _config(
         config.timeout_ms = timeout
     if geoip is not None:
         config.geoip = geoip
+    if solve_present is not None:
+        config.solve_present = solve_present
     return config
 
 
@@ -209,6 +213,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
 @click.option("--headed", is_flag=True, help="Show the browser window.")
 @click.option("--humanize/--no-humanize", default=None)
 @click.option("--geoip", is_flag=True, default=None, help="Match timezone and locale to the proxy IP (Cloak).")
+@click.option("--solve-widgets", is_flag=True, default=None, help="Solve token widgets even when the page is not blocked.")
 @click.option("--proxy", default=None)
 @click.option(
     "--solver",
@@ -230,6 +235,7 @@ def fetch(
     headed: bool,
     humanize: bool | None,
     geoip: bool | None,
+    solve_widgets: bool | None,
     proxy: str | None,
     solver: str | None,
     manual: bool,
@@ -258,6 +264,7 @@ def fetch(
         humanize=humanize,
         timeout=timeout,
         geoip=geoip,
+        solve_present=solve_widgets,
     )
 
     async def run():
@@ -317,6 +324,81 @@ def fetch(
         console.print()
         console.print("[bold]text[/bold]")
         console.print(result.text[:2000], markup=False)
+
+
+@main.command("fingerprint")
+@click.option("--tier", type=click.Choice([t.value for t in Tier]), default="auto")
+@click.option("--all", "run_all", is_flag=True, help="Probe every configured engine.")
+@click.option("--url", default="https://example.com")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--headed", is_flag=True)
+@click.option("--proxy", default=None)
+def fingerprint_cmd(
+    tier: str,
+    run_all: bool,
+    url: str,
+    as_json: bool,
+    headed: bool,
+    proxy: str | None,
+) -> None:
+    """Compare navigator, screen, client hints, and canvas across engines."""
+    config = _config(proxy=proxy, headed=headed)
+
+    async def run():
+        plague = Plague(config)
+        names = (
+            list(plague.engines)
+            if run_all
+            else [n for n in CHAINS[Tier(tier)] if n in plague.engines]
+        )
+        results: dict[str, dict] = {}
+        try:
+            for name in names:
+                engine = plague.engines[name]
+                session = None
+                try:
+                    session = await engine.open(config.profile())
+                    await session.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout_ms=config.timeout_ms,
+                    )
+                    results[name] = await collect_fingerprint(session)
+                except Exception as exc:
+                    results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+                finally:
+                    if session is not None:
+                        await session.close()
+        finally:
+            await plague.close()
+        return results
+
+    results = asyncio.run(run())
+    if as_json:
+        click.echo(json.dumps(results, indent=2, default=str))
+        return
+
+    names = list(results)
+    table = Table(title=f"fingerprint ({url})")
+    table.add_column("property", style="cyan", no_wrap=True)
+    for name in names:
+        table.add_column(name, overflow="fold")
+
+    keys: list[str] = []
+    for data in results.values():
+        for key in data:
+            if key not in keys:
+                keys.append(key)
+
+    for key in keys:
+        row = [key]
+        for name in names:
+            value = results[name].get(key, "")
+            if isinstance(value, (list, dict)):
+                value = json.dumps(value, default=str)
+            row.append(str(value)[:120])
+        table.add_row(*row)
+    console.print(table)
 
 
 @main.command("detect")

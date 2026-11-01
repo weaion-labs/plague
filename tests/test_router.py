@@ -122,9 +122,9 @@ class FakeSolver:
         return None
 
 
-def make_plague(engines, solver=None):
+def make_plague(engines, solver=None, **config_kwargs):
     return Plague(
-        Config(solver="none", headless=True, humanize=False),
+        Config(solver="none", headless=True, humanize=False, **config_kwargs),
         engines=engines,
         solver=solver,
     )
@@ -225,6 +225,31 @@ def test_non_blocking_recaptcha_does_not_call_solver():
     assert result.ok
     assert result.solved is False
     assert solver.calls == []
+
+
+def test_solve_present_solves_a_non_blocking_widget(monkeypatch):
+    stealth = FakeEngine(
+        "cloak",
+        [{"status": 200, "html": CLEAN_HTML.replace("</body>", RECAPTCHA_HTML)}],
+        caps={Capability.VISUAL},
+    )
+    solver = FakeSolver()
+    plague = make_plague(
+        {"cloak": stealth}, solver=solver, solve_present=True
+    )
+
+    async def fake_inject(page, vendor, token):
+        return True
+
+    monkeypatch.setattr("plague.router.inject_token", fake_inject)
+
+    result = asyncio.run(plague.fetch("https://shop.test/", tier=Tier.STEALTH))
+
+    assert result.ok
+    assert result.solved is True
+    assert len(solver.calls) == 1
+    assert solver.calls[0].vendor == "recaptcha"
+    assert len(result.attempts) == 1
 
 
 def test_all_engines_failing_raises_with_attempts():

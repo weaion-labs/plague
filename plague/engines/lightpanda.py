@@ -82,6 +82,7 @@ class LightpandaEngine(BaseEngine):
             "--log-level",
             "warn",
         ]
+        args += self.config.lightpanda_args
         if profile.proxy:
             args += ["--http-proxy", profile.proxy]
         if profile.locale:

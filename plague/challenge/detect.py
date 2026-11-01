@@ -317,9 +317,39 @@ def detect(
 
     sitekey = find_sitekey(text, primary.vendor)
     if sitekey:
+        inferred = vendor_from_sitekey(sitekey)
+        if (
+            inferred
+            and inferred != primary.vendor
+            and primary.kind is ChallengeKind.TOKEN
+        ):
+            primary = replace(primary, vendor=inferred, kind=ChallengeKind.TOKEN)
         primary = replace(primary, sitekey=sitekey)
 
     return primary
+
+
+_UUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.I,
+)
+
+
+def vendor_from_sitekey(sitekey: str) -> str | None:
+    """Infer the vendor from the key format.
+
+    reCAPTCHA keys start with 6L, hCaptcha keys are UUIDs, and Turnstile keys
+    start with 0x or a test prefix. This catches pages that reuse the
+    g-recaptcha container class for an hCaptcha widget.
+    """
+    value = sitekey.strip().lower()
+    if value.startswith("6l"):
+        return "recaptcha"
+    if _UUID.fullmatch(value):
+        return "hcaptcha"
+    if value.startswith(("0x", "1x", "2x", "3x")):
+        return "cloudflare_turnstile"
+    return None
 
 
 def find_sitekey(html: str, vendor: str) -> str | None:

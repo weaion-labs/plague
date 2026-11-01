@@ -144,6 +144,10 @@ class Session:
     async def wait_for_timeout(self, ms: int) -> None:
         await self.page.wait_for_timeout(ms)
 
+    async def add_init_script(self, script: str) -> None:
+        self._require(Capability.INIT_SCRIPT)
+        await self.page.add_init_script(script)
+
     async def screenshot(self, path: str) -> str:
         self._require(Capability.VISUAL)
         await self.page.screenshot(path=path, full_page=True)

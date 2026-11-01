@@ -114,9 +114,38 @@ plague detect https://protected.example --tier stealth
 
 # Compare engines and latency across a list
 plague bench https://example.com https://news.ycombinator.com --tier auto
+
+# Compare fingerprint surfaces across every engine
+plague fingerprint --all
 ```
 
 `--tier` accepts `auto`, `fast`, `stealth`, and `chrome`.
+
+## Patched Lightpanda (optional)
+
+Stock Lightpanda is fast, but it announces itself: `Lightpanda/1.0`, Linux
+platform, zero plugins, no `window.chrome`. The patch in
+`patches/lightpanda-chrome-persona.patch` rebuilds it with a Chrome 146
+Windows persona:
+
+- Chrome User-Agent and Chrome client hints
+- `Win32` platform, `Google Inc.` vendor, Chrome app version
+- 8 hardware threads, Windows UA-CH platform
+- 5 PDF plugins, 2 MIME types, `window.chrome`
+- 1920x1080 screen values and consistent window dimensions
+- Chrome TLS cipher set and HTTP/2 SETTINGS, window sizes, and pseudo-header order
+
+It does not fake canvas, WebGL, or WebRTC. Those are still missing, and faking
+them without a real rasterizer is easier to detect than an honest gap. The TLS
+cipher hash and the Akamai HTTP/2 hash match Cloak. Four TLS extensions still
+differ: `001b`, `0023`, `44cd`, and `fe0d`. Read
+`docs/REVERSE_ENGINEERING.md` for the full comparison and
+`patches/README.md` for build steps.
+
+```bash
+export PLAGUE_LIGHTPANDA_BIN=$PWD/.plague/lightpanda-src/zig-out/bin/lightpanda
+plague fingerprint --tier fast --json
+```
 
 ## Library
 
@@ -182,6 +211,9 @@ export CAPSOLVER_API_KEY=...
 export TWOCAPTCHA_API_KEY=...
 
 plague fetch https://protected.example --tier stealth
+
+# Also solve a widget on a page that loaded normally, for example a login form
+plague fetch https://protected.example --tier stealth --solve-widgets
 ```
 
 Supported:
@@ -200,6 +232,19 @@ Not supported by design:
 
 Solver prices in the telemetry are estimates, not a bill.
 
+### Late-rendered widgets
+
+Some sites build the widget after load, so the sitekey is not in the HTML. Plague
+installs a render hook before page scripts run, records the sitekey, action, and
+cdata from `turnstile.render`, `grecaptcha.render`, or `hcaptcha.render`, and
+falls back to the widget DOM and its iframe. `--solve-widgets` also solves a
+widget on a page that loaded normally, for example a login form.
+
+For a non-blocking widget, `solved=true` means the token was injected. It does
+not prove the site accepted it, because the form was not submitted. For a
+blocking wall, the router reloads and re-checks, which is a real acceptance
+signal.
+
 ### Manual solving
 
 ```bash
@@ -217,6 +262,7 @@ All settings can come from the environment.
 |---|---|---|
 | `PLAGUE_LIGHTPANDA_BIN` | auto | Path to the Lightpanda binary |
 | `PLAGUE_LIGHTPANDA_PORT` | random | Fixed CDP port, or 0 for a free port |
+| `PLAGUE_LIGHTPANDA_ARGS` | none | Extra `serve` arguments, shell-split |
 | `PLAGUE_CHROME_EXECUTABLE` | auto | Chrome or Chromium path |
 | `PLAGUE_CHROME_CHANNEL` | none | Playwright channel, for example `chrome` |
 | `PLAGUE_CLOAK_LICENSE_KEY` | none | CloakBrowser Pro key |
@@ -238,6 +284,7 @@ All settings can come from the environment.
 | `PLAGUE_JS_WAIT_MS` | 2500 | Wait per JS round |
 | `PLAGUE_MIN_TEXT_CHARS` | 40 | Empty app-shell escalation threshold |
 | `PLAGUE_SOLVE_ON_FAST` | false | Allow token solving on Lightpanda (usually pointless) |
+| `PLAGUE_SOLVE_PRESENT` | false | Solve token widgets even when the page is not blocked |
 | `PLAGUE_HOME` | ./.plague or ~/.cache/plague | Cache and log directory |
 
 ## How escalation works
@@ -269,6 +316,7 @@ will skip Lightpanda and go straight to Cloak.
 ```
 plague/
   router.py          tier selection, escalation, telemetry
+  fingerprint.py     cross-engine navigator and canvas probe
   engines/
     lightpanda.py    process + CDP client
     cloak.py         CloakBrowser wrapper
@@ -279,27 +327,35 @@ plague/
     inject.py        token fields, events, reCAPTCHA callbacks
     actions.py       Turnstile checkbox clicks
     solvers/         CapSolver, 2Captcha, manual
-  cli.py             doctor, fetch, detect, bench
+  cli.py             doctor, fetch, detect, benchmark, fingerprint
+scripts/
+  captcha_matrix.py  run demo walls and record results
+patches/
+  lightpanda-chrome-persona.patch
+  README.md
+docs/
+  REVERSE_ENGINEERING.md
 tests/
   test_detect.py     signature and false-positive tests
   test_router.py     escalation and solver flow with fake engines
   test_solver.py     provider payloads against mock HTTP
   test_text.py       HTML extraction
-  test_integration.py real browser, local synthetic challenge
+  test_integration.py real browser, local synthetic challenges
 ```
 
 ## Development
 
 ```bash
 python -m pytest                 # unit tests, no browsers
-python -m pytest -m integration  # one real Chromium test
+python -m pytest -m integration  # three real Chromium tests
 ```
 
-The integration test serves a local 403 page with a reCAPTCHA-shaped widget.
-The solver returns a fixed token, injection fires the page's `change` handler,
-the handler sets a clearance cookie, and the router reloads into the clean page.
-It validates the full detect -> solve -> inject -> reload path against a real
-browser.
+The integration tests serve local 403 pages with reCAPTCHA, hCaptcha, and
+Turnstile-shaped widgets. The fake solver returns a token, injection fires the
+page's `change` handler, the handler sets a clearance cookie, and the router
+reloads into the clean page. They validate the full
+detect -> solve -> inject -> reload path for all three token vendors against a
+real browser.
 
 ## Verified in this repo
 
@@ -310,12 +366,27 @@ browser.
 - Cloudflare and DataDome signatures classify correctly on live pages,
   including the important false-positive case where a widget or script is
   present but the page is not blocked.
-- reCAPTCHA detection, token injection, cookie handoff, and reload pass against
-  a local synthetic challenge in a real browser.
+- reCAPTCHA, hCaptcha, and Turnstile detection, token injection, cookie
+  handoff, and reload pass against local synthetic challenges in a real
+  browser.
+- The patched Lightpanda build reports a Chrome UA, Win32 platform,
+  `Google Inc.` vendor, 5 plugins, 2 MIME types, `window.chrome`, 8 hardware
+  threads, and a 1920x1080 screen. Canvas, WebGL, and WebRTC are still absent.
+- The patched build matches Cloak on the JA4 cipher hash
+  (`8daaf6152771`) and the full Akamai HTTP/2 fingerprint
+  (`52d84b11737d980aef856699f885ca86`). Four TLS extensions still differ.
+- The CAPTCHA demo matrix in `scripts/captcha_matrix.py` records what each
+  engine does. With no solver keys, token walls are detected but not solved.
+  The NopeCHA Cloudflare demo still blocks both the patched Lightpanda and the
+  free headless Cloak build.
 
 What is not verified without keys: live CapSolver and 2Captcha calls, and live
 solves on commercial anti-bot targets. The HTTP payloads are unit tested, but
 vendor behavior changes.
+
+The free headless Cloak build still fails the NopeCHA Cloudflare demo. That is
+a real boundary: a newer paid build, a headed window, and a residential IP are
+the levers for that class of target.
 
 ## Legal and ethical note
 

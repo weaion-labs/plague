@@ -18,6 +18,8 @@ from .challenge import (
     inject_token,
 )
 from .challenge.actions import click_turnstile
+from .challenge.capture import install as install_capture
+from .challenge.live import extract_hints
 from .config import Config
 from .engines import BaseEngine, EngineUnavailable, default_engines
 from .models import (
@@ -151,6 +153,12 @@ class Plague:
                     )
                     continue
 
+                # Record sitekey/action/cdata from vendor render calls before
+                # page scripts run. This is what makes late-rendered widgets
+                # solvable without guessing from the DOM.
+                if self.solver is not None or self.config.solve_present:
+                    await install_capture(session)
+
                 nav = await session.goto(
                     url, wait_until=wait_until, timeout_ms=timeout
                 )
@@ -200,15 +208,20 @@ class Plague:
                             break
 
                 allow_solve = name != "lightpanda" or self.config.solve_on_fast
+                wants_solve = challenge and (
+                    challenge.blocking or self.config.solve_present
+                )
                 if (
-                    challenge
-                    and challenge.blocking
+                    wants_solve
                     and challenge.kind is ChallengeKind.TOKEN
                     and self.solver is not None
                     and allow_solve
                 ):
-                    sitekey = challenge.sitekey or find_sitekey(
-                        html, challenge.vendor
+                    hints = await extract_hints(session.page, challenge.vendor)
+                    sitekey = (
+                        challenge.sitekey
+                        or find_sitekey(html, challenge.vendor)
+                        or hints.get("sitekey")
                     )
                     if sitekey:
                         task = SolveTask(
@@ -217,6 +230,8 @@ class Plague:
                             sitekey=sitekey,
                             page=session.page,
                             html=html,
+                            action=hints.get("action"),
+                            cdata=hints.get("cdata"),
                         )
                         try:
                             solution = await self.solver.solve(task)
@@ -229,13 +244,20 @@ class Plague:
                             await inject_token(
                                 session.page, challenge.vendor, solution.token
                             )
-                            await session.wait_for_timeout(1500)
-                            # Reload after injecting so clearance cookies and the
-                            # real response replace the challenge document.
-                            nav = await session.goto(
-                                url, wait_until=wait_until, timeout_ms=timeout
-                            )
-                            html = await session.content()
+                            if challenge.blocking:
+                                await session.wait_for_timeout(1500)
+                                # Reload after injecting so clearance cookies and
+                                # the real response replace the challenge document.
+                                nav = await session.goto(
+                                    url, wait_until=wait_until, timeout_ms=timeout
+                                )
+                                html = await session.content()
+                            else:
+                                # A widget on an accessible form: keep the page
+                                # and its form state, do not reload.
+                                await session.wait_for_timeout(1000)
+                                html = await session.content()
+                                nav = self._nav(session, nav)
                             updated = detect(
                                 status=nav.status,
                                 url=nav.url,

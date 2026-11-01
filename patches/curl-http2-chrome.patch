@@ -1,0 +1,79 @@
+--- a/lib/http2.c
++++ b/lib/http2.c
+@@ -68,7 +68,7 @@
+ /* this is how much we want "in flight" for a stream, initially, IFF
+  * nghttp2 allows us to tweak the local window size. */
+ #if NGHTTP2_HAS_SET_LOCAL_WINDOW_SIZE
+-#define H2_STREAM_WINDOW_SIZE_INITIAL  (64 * 1024)
++#define H2_STREAM_WINDOW_SIZE_INITIAL  (6 * 1024 * 1024)
+ #else
+ #define H2_STREAM_WINDOW_SIZE_INITIAL H2_STREAM_WINDOW_SIZE_MAX
+ #endif
+@@ -82,9 +82,9 @@
+  * the overall connection. Streams might become PAUSED which will block their
+  * received QUOTA in the connection window. If we run out of space, the server
+  * is blocked from sending us any data. See #10988 for an issue with this. */
+-#define HTTP2_HUGE_WINDOW_SIZE (100 * H2_STREAM_WINDOW_SIZE_MAX)
++#define HTTP2_HUGE_WINDOW_SIZE (15 * 1024 * 1024)
+ 
+-#define H2_SETTINGS_IV_LEN 3
++#define H2_SETTINGS_IV_LEN 4
+ #define H2_BINSETTINGS_LEN 80
+ 
+ struct cf_h2_ctx {
+@@ -218,17 +218,24 @@
+                                 struct Curl_easy *data,
+                                 struct cf_h2_ctx *ctx)
+ {
+-  iv[0].settings_id = NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS;
+-  iv[0].value = Curl_multi_max_concurrent_streams(data->multi);
++  (void)data;
++  /* Chrome 146 HTTP/2 SETTINGS, in Chrome's order. This is part of the
++     Akamai HTTP/2 fingerprint. */
++  iv[0].settings_id = NGHTTP2_SETTINGS_HEADER_TABLE_SIZE;
++  iv[0].value = 65536;
+ 
+-  iv[1].settings_id = NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE;
+-  iv[1].value = cf_h2_initial_win_size(data);
++  iv[1].settings_id = NGHTTP2_SETTINGS_ENABLE_PUSH;
++  iv[1].value = 0;
++
++  iv[2].settings_id = NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE;
++  iv[2].value = 6291456;
+   if(ctx)
+-    ctx->initial_win_size = iv[1].value;
+-  iv[2].settings_id = NGHTTP2_SETTINGS_ENABLE_PUSH;
+-  iv[2].value = !!data->multi->push_cb;
++    ctx->initial_win_size = iv[2].value;
++
++  iv[3].settings_id = NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE;
++  iv[3].value = 262144;
+ 
+-  return 3;
++  return 4;
+ }
+ 
+ static ssize_t populate_binsettings(uint8_t *binsettings,
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -5038,14 +5038,16 @@
+   Curl_dynhds_set_opts(h2_headers, DYNHDS_OPT_LOWERCASE);
+   result = Curl_dynhds_add(h2_headers, STRCONST(HTTP_PSEUDO_METHOD),
+                            req->method, strlen(req->method));
+-  if(!result && scheme) {
+-    result = Curl_dynhds_add(h2_headers, STRCONST(HTTP_PSEUDO_SCHEME),
+-                             scheme, strlen(scheme));
+-  }
++  /* Chrome sends :method, :authority, :scheme, :path. The order is part of
++     the HTTP/2 fingerprint. */
+   if(!result && authority) {
+     result = Curl_dynhds_add(h2_headers, STRCONST(HTTP_PSEUDO_AUTHORITY),
+                              authority, strlen(authority));
+   }
++  if(!result && scheme) {
++    result = Curl_dynhds_add(h2_headers, STRCONST(HTTP_PSEUDO_SCHEME),
++                             scheme, strlen(scheme));
++  }
+   if(!result && req->path) {
+     result = Curl_dynhds_add(h2_headers, STRCONST(HTTP_PSEUDO_PATH),
+                              req->path, strlen(req->path));

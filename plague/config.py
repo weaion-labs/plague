@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +93,7 @@ class Config:
     # Engines
     lightpanda_bin: str | None = field(default_factory=find_lightpanda)
     lightpanda_port: int = 0  # 0 means pick a free port per session
+    lightpanda_args: list[str] = field(default_factory=list)
     chrome_executable: str | None = field(default_factory=find_chrome)
     chrome_channel: str | None = None
     cloak_license_key: str | None = None
@@ -114,6 +116,7 @@ class Config:
     solver_timeout_s: int = 180
     manual_timeout_s: int = 300
     solve_on_fast: bool = False
+    solve_present: bool = False
     js_challenge_rounds: int = 3
     js_challenge_wait_ms: int = 2500
     min_text_chars: int = 40
@@ -127,6 +130,7 @@ class Config:
         return cls(
             lightpanda_bin=find_lightpanda(),
             lightpanda_port=_env_int("PLAGUE_LIGHTPANDA_PORT", 0),
+            lightpanda_args=shlex.split(os.environ.get("PLAGUE_LIGHTPANDA_ARGS", "")),
             chrome_executable=find_chrome(),
             chrome_channel=os.environ.get("PLAGUE_CHROME_CHANNEL") or None,
             cloak_license_key=os.environ.get("PLAGUE_CLOAK_LICENSE_KEY")
@@ -147,6 +151,7 @@ class Config:
             solver_timeout_s=_env_int("PLAGUE_SOLVER_TIMEOUT_S", 180),
             manual_timeout_s=_env_int("PLAGUE_MANUAL_TIMEOUT_S", 300),
             solve_on_fast=_env_bool("PLAGUE_SOLVE_ON_FAST", False),
+            solve_present=_env_bool("PLAGUE_SOLVE_PRESENT", False),
             js_challenge_rounds=_env_int("PLAGUE_JS_ROUNDS", 3),
             js_challenge_wait_ms=_env_int("PLAGUE_JS_WAIT_MS", 2500),
             min_text_chars=_env_int("PLAGUE_MIN_TEXT_CHARS", 40),
