@@ -132,6 +132,7 @@ async def main():
         print(result.engine, result.status, result.elapsed_ms, "ms")
         print(result.title)
         print(result.text[:500])
+        print(len(result.cookies or []), "cookies")
 
         for attempt in result.attempts:
             print(attempt.engine, attempt.ok, attempt.challenge, attempt.elapsed_ms)
@@ -222,6 +223,8 @@ All settings can come from the environment.
 | `PLAGUE_PROXY` | none | Default proxy URL |
 | `PLAGUE_HEADLESS` | true | Headless mode |
 | `PLAGUE_HUMANIZE` | true | Humanized input on Cloak |
+| `PLAGUE_HUMAN_PRESET` | default | `default` or `careful` |
+| `PLAGUE_GEOIP` | false | Match timezone and locale to the proxy IP (Cloak; needs `cloakbrowser[geoip]`) |
 | `PLAGUE_LOCALE` | en-US | Locale |
 | `PLAGUE_TIMEZONE` | none | Timezone |
 | `PLAGUE_TIMEOUT_MS` | 30000 | Navigation timeout |
@@ -233,6 +236,7 @@ All settings can come from the environment.
 | `PLAGUE_MANUAL_TIMEOUT_S` | 300 | Manual solve timeout |
 | `PLAGUE_JS_ROUNDS` | 3 | Reloads for JS interstitials |
 | `PLAGUE_JS_WAIT_MS` | 2500 | Wait per JS round |
+| `PLAGUE_MIN_TEXT_CHARS` | 40 | Empty app-shell escalation threshold |
 | `PLAGUE_SOLVE_ON_FAST` | false | Allow token solving on Lightpanda (usually pointless) |
 | `PLAGUE_HOME` | ./.plague or ~/.cache/plague | Cache and log directory |
 
@@ -303,10 +307,11 @@ browser.
 - CloakBrowser's stealth Chromium launches headless, reports
   `navigator.webdriver === false`, and takes screenshots.
 - Stock Chrome works as the reference tier.
-- Cloudflare, DataDome, and reCAPTCHA signatures classify correctly on live
-  pages, including the important false-positive case where a widget is present
-  but the page is not blocked.
-- The synthetic challenge flow passes end to end.
+- Cloudflare and DataDome signatures classify correctly on live pages,
+  including the important false-positive case where a widget or script is
+  present but the page is not blocked.
+- reCAPTCHA detection, token injection, cookie handoff, and reload pass against
+  a local synthetic challenge in a real browser.
 
 What is not verified without keys: live CapSolver and 2Captcha calls, and live
 solves on commercial anti-bot targets. The HTTP payloads are unit tested, but

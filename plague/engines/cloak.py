@@ -60,6 +60,8 @@ class CloakEngine(BaseEngine):
         kwargs: dict = {
             "headless": profile.headless,
             "humanize": profile.humanize,
+            "human_preset": profile.human_preset,
+            "geoip": profile.geoip,
             "proxy": profile.proxy,
             "locale": profile.locale,
             "license_key": self.config.cloak_license_key,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -39,6 +40,12 @@ CHAINS: dict[Tier, tuple[str, ...]] = {
     Tier.STEALTH: ("cloak",),
     Tier.CHROME: ("chrome",),
 }
+
+# Common markers for a client-rendered shell. A white page from one of these is
+# not a successful extraction, even if the HTTP status was 200.
+APP_SHELL = re.compile(
+    r"""id=["'](?:root|app|__next|__nuxt|svelte)["']""", re.IGNORECASE
+)
 
 _UNSET = object()
 
@@ -97,6 +104,7 @@ class Plague:
         headed: bool | None = None,
         humanize: bool | None = None,
         proxy: str | None = None,
+        geoip: bool | None = None,
     ) -> Result:
         tier = Tier(tier)
         if profile is None:
@@ -107,6 +115,8 @@ class Plague:
                 overrides["humanize"] = humanize
             if proxy is not None:
                 overrides["proxy"] = proxy
+            if geoip is not None:
+                overrides["geoip"] = geoip
             profile = self.config.profile(**overrides)
 
         chain, skipped = self._chain(tier, need_visual=bool(screenshot))
@@ -254,6 +264,48 @@ class Plague:
                     )
                     continue
 
+                # A JS app shell can return 200 with an empty body. Lightpanda
+                # is cheap, so give hydration a moment, then escalate if the
+                # page still has no visible text.
+                if (
+                    name == "lightpanda"
+                    and APP_SHELL.search(html)
+                    and len((await session.text()).strip())
+                    < self.config.min_text_chars
+                ):
+                    await session.wait_for_timeout(1500)
+                    html = await session.content()
+                    nav = self._nav(session, nav)
+                    challenge = detect(
+                        status=nav.status,
+                        url=nav.url,
+                        headers=nav.headers,
+                        html=html,
+                    )
+                    if challenge and challenge.blocking:
+                        attempts.append(
+                            self._attempt(
+                                name,
+                                attempt_start,
+                                ok=False,
+                                status=nav.status,
+                                challenge=challenge.label,
+                                error="challenge appeared after hydration",
+                            )
+                        )
+                        continue
+                    if len((await session.text()).strip()) < self.config.min_text_chars:
+                        attempts.append(
+                            self._attempt(
+                                name,
+                                attempt_start,
+                                ok=False,
+                                status=nav.status,
+                                error="client-rendered shell with no visible text; escalated",
+                            )
+                        )
+                        continue
+
                 if actions:
                     await self._run_actions(session, actions)
                     html = await session.content()
@@ -284,6 +336,10 @@ class Plague:
                 shot = None
                 if screenshot:
                     shot = await session.screenshot(screenshot)
+                try:
+                    cookies = await session.cookies()
+                except Exception:
+                    cookies = None
 
                 attempts.append(
                     self._attempt(
@@ -309,6 +365,7 @@ class Plague:
                     solved=solved,
                     elapsed_ms=int((time.monotonic() - overall_start) * 1000),
                     screenshot=shot,
+                    cookies=cookies,
                 )
             except Exception as exc:
                 attempts.append(

@@ -23,6 +23,10 @@ RECAPTCHA_HTML = """
 <script src="https://www.google.com/recaptcha/api.js"></script></body></html>
 """
 
+APP_SHELL_HTML = """
+<html><body><div id="root"></div><script src="/static/app.js"></script></body></html>
+"""
+
 
 class FakePage:
     def __init__(self):
@@ -243,6 +247,20 @@ def test_fast_only_tier_does_not_escalate():
 
     with pytest.raises(PlagueError):
         asyncio.run(plague.fetch("https://blocked.test/", tier=Tier.FAST))
+
+
+def test_lightpanda_empty_app_shell_escalates():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": APP_SHELL_HTML}])
+    stealth = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
+    )
+    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+
+    result = asyncio.run(plague.fetch("https://app.test/"))
+
+    assert result.engine == "cloak"
+    assert result.attempts[0].ok is False
+    assert "shell" in (result.attempts[0].error or "")
 
 
 def test_probe_reports_challenge_without_escalation():

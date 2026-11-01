@@ -59,6 +59,7 @@ def _config(
     headed: bool = False,
     humanize: bool | None = None,
     timeout: int | None = None,
+    geoip: bool | None = None,
 ) -> Config:
     config = Config.from_env()
     if solver:
@@ -71,6 +72,8 @@ def _config(
         config.humanize = humanize
     if timeout is not None:
         config.timeout_ms = timeout
+    if geoip is not None:
+        config.geoip = geoip
     return config
 
 
@@ -205,6 +208,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--headed", is_flag=True, help="Show the browser window.")
 @click.option("--humanize/--no-humanize", default=None)
+@click.option("--geoip", is_flag=True, default=None, help="Match timezone and locale to the proxy IP (Cloak).")
 @click.option("--proxy", default=None)
 @click.option(
     "--solver",
@@ -225,6 +229,7 @@ def fetch(
     as_json: bool,
     headed: bool,
     humanize: bool | None,
+    geoip: bool | None,
     proxy: str | None,
     solver: str | None,
     manual: bool,
@@ -247,7 +252,12 @@ def fetch(
         actions.append(Action(type="fill", selector=selector, value=value))
 
     config = _config(
-        solver=solver, proxy=proxy, headed=headed, humanize=humanize, timeout=timeout
+        solver=solver,
+        proxy=proxy,
+        headed=headed,
+        humanize=humanize,
+        timeout=timeout,
+        geoip=geoip,
     )
 
     async def run():
@@ -260,6 +270,7 @@ def fetch(
                 timeout_ms=timeout,
                 screenshot=screenshot,
                 actions=actions or None,
+                geoip=geoip,
             )
         finally:
             await plague.close()

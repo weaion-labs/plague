@@ -10,6 +10,7 @@ async def main() -> None:
     config = Config.from_env()
     config.proxy = os.environ.get("RESIDENTIAL_PROXY")
     config.humanize = True
+    config.geoip = bool(config.proxy)
     config.headless = False
 
     async with Plague(config) as plague:

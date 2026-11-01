@@ -94,6 +94,7 @@ class Result:
     solved: bool = False
     elapsed_ms: int = 0
     screenshot: str | None = None
+    cookies: list[dict[str, Any]] | None = None
 
     @property
     def ok(self) -> bool:
@@ -114,6 +115,8 @@ class Profile:
     user_data_dir: str | None = None
     viewport: dict[str, int] | None = None
     extra_headers: dict[str, str] | None = None
+    geoip: bool = False
+    human_preset: str = "default"
 
 
 @dataclass

@@ -99,6 +99,8 @@ class Config:
     # Browser defaults
     headless: bool = True
     humanize: bool = True
+    human_preset: str = "default"
+    geoip: bool = False
     proxy: str | None = None
     locale: str = "en-US"
     timezone: str | None = None
@@ -114,6 +116,7 @@ class Config:
     solve_on_fast: bool = False
     js_challenge_rounds: int = 3
     js_challenge_wait_ms: int = 2500
+    min_text_chars: int = 40
 
     # Behavior
     max_escalations: int = 3
@@ -131,6 +134,8 @@ class Config:
             or None,
             headless=_env_bool("PLAGUE_HEADLESS", True),
             humanize=_env_bool("PLAGUE_HUMANIZE", True),
+            human_preset=os.environ.get("PLAGUE_HUMAN_PRESET", "default"),
+            geoip=_env_bool("PLAGUE_GEOIP", False),
             proxy=os.environ.get("PLAGUE_PROXY") or None,
             locale=os.environ.get("PLAGUE_LOCALE", "en-US"),
             timezone=os.environ.get("PLAGUE_TIMEZONE") or None,
@@ -144,6 +149,7 @@ class Config:
             solve_on_fast=_env_bool("PLAGUE_SOLVE_ON_FAST", False),
             js_challenge_rounds=_env_int("PLAGUE_JS_ROUNDS", 3),
             js_challenge_wait_ms=_env_int("PLAGUE_JS_WAIT_MS", 2500),
+            min_text_chars=_env_int("PLAGUE_MIN_TEXT_CHARS", 40),
         )
 
     def profile(self, **overrides) -> Profile:
@@ -153,6 +159,8 @@ class Config:
             "timezone": self.timezone,
             "headless": self.headless,
             "humanize": self.humanize,
+            "human_preset": self.human_preset,
+            "geoip": self.geoip,
             "user_data_dir": self.user_data_dir,
         }
         values.update({k: v for k, v in overrides.items() if v is not None})

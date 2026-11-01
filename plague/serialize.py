@@ -41,6 +41,7 @@ def result_dict(result: Result, *, include_html: bool = False) -> dict[str, Any]
         "solved": result.solved,
         "elapsed_ms": result.elapsed_ms,
         "screenshot": result.screenshot,
+        "cookies": result.cookies,
         "challenge": challenge_dict(result.challenge),
         "attempts": [attempt_dict(a) for a in result.attempts],
     }
