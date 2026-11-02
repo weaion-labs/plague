@@ -147,6 +147,42 @@ export PLAGUE_LIGHTPANDA_BIN=$PWD/.plague/lightpanda-src/zig-out/bin/lightpanda
 plague fingerprint --tier fast --json
 ```
 
+## MCP server (project-local)
+
+The project ships a stdio MCP server in `plague/mcp_server.py`. It is configured
+in `.opencode/opencode.json` and starts from the project root. Nothing is
+installed globally and no global OpenCode configuration is changed.
+
+```bash
+opencode mcp list
+# ✓ plague  connected
+```
+
+Tools exposed to the agent:
+
+| Tool | What it does |
+|---|---|
+| `plague_doctor` | Engine availability, active solver, binary paths |
+| `plague_fetch` | Fetch a URL through the tier router |
+| `plague_detect` | Classify a challenge wall without solving |
+| `plague_fingerprint` | Compare navigator, screen, client hints, canvas |
+| `plague_bench` | Fetch a list of URLs and report engine and latency |
+| `plague_captcha_demos` | Run the public demo walls and classify results |
+
+The server prefers the patched Lightpanda binary at
+`.plague/lightpanda-src/zig-out/bin/lightpanda` when it exists. It also exposes
+`plague://docs/reverse-engineering` and `plague://docs/readme` as resources.
+
+Run it manually for debugging:
+
+```bash
+python3 -m plague.mcp_server
+```
+
+The server uses the Python environment that starts it. If you want strict
+isolation, create a project venv and change the `command` in
+`.opencode/opencode.json` to `.venv/bin/python`.
+
 ## Library
 
 ```python
@@ -317,6 +353,7 @@ will skip Lightpanda and go straight to Cloak.
 plague/
   router.py          tier selection, escalation, telemetry
   fingerprint.py     cross-engine navigator and canvas probe
+  mcp_server.py      project-local stdio MCP server
   engines/
     lightpanda.py    process + CDP client
     cloak.py         CloakBrowser wrapper
@@ -341,13 +378,14 @@ tests/
   test_solver.py     provider payloads against mock HTTP
   test_text.py       HTML extraction
   test_integration.py real browser, local synthetic challenges
+  test_mcp.py        stdio MCP handshake and tool catalog
 ```
 
 ## Development
 
 ```bash
 python -m pytest                 # unit tests, no browsers
-python -m pytest -m integration  # three real Chromium tests
+python -m pytest -m integration  # three browser tests plus MCP handshake
 ```
 
 The integration tests serve local 403 pages with reCAPTCHA, hCaptcha, and
@@ -355,7 +393,8 @@ Turnstile-shaped widgets. The fake solver returns a token, injection fires the
 page's `change` handler, the handler sets a clearance cookie, and the router
 reloads into the clean page. They validate the full
 detect -> solve -> inject -> reload path for all three token vendors against a
-real browser.
+real browser. `test_mcp.py` starts the MCP server over stdio, lists its tools,
+and calls `doctor`.
 
 ## Verified in this repo
 

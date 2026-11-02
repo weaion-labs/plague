@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "plague": {
+        "type": "local",
+        "command": ["python3", "-m", "plague.mcp_server"],
+        "cwd": ".",
+        "codemode": false,
+        "timeout": {
+          "startup": 45000,
+          "catalog": 30000,
+          "execution": 600000
+        },
+        "environment": {
+          "PLAGUE_LIGHTPANDA_BIN": ".plague/lightpanda-src/zig-out/bin/lightpanda",
+          "PYTHONUNBUFFERED": "1"
+        }
+      }
+    }
+  }
+}

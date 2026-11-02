@@ -17,6 +17,7 @@ dependencies = [
   "httpx>=0.27",
   "click>=8.1",
   "rich>=13.0",
+  "mcp>=1.29",
 ]
 
 [project.optional-dependencies]
