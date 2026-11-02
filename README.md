@@ -73,6 +73,48 @@ Lightpanda's speed and memory numbers are vendor benchmarks (933 pages on an
 AWS m5.large). They describe the happy path. The metric that matters is
 successful pages per dollar, including escalations.
 
+## Speed and accuracy
+
+Measured on local deterministic pages, `--repeat 3`. Full details in
+[`benchmarks/README.md`](benchmarks/README.md).
+
+| Engine | Cold fetch | Warm p50 | Accuracy | RSS |
+|---|---:|---:|---:|---:|
+| Lightpanda, patched | 1144 ms | 71 ms | 100% | 155 MB |
+| Lightpanda, stock | 1123 ms | 69 ms | 100% | 149 MB |
+| CloakBrowser | 778 ms | 84 ms | 100% | 848 MB |
+| Chrome | 943 ms | 72 ms | 100% | 1052 MB |
+| Playwright Chromium | 255 ms | 67 ms | 100% | 572 MB |
+
+The honest result:
+
+- **One cold fetch:** raw Playwright wins. Lightpanda pays about one second of
+  process startup. Plague's `fetch()` opens a fresh session each time.
+- **Warm navigation:** all engines are close on small pages. Lightpanda is about
+  twice as fast on a 180 KB content page because it has no layout tree.
+- **Memory:** Lightpanda uses about 150 MB versus 850 MB for Cloak and 1050 MB
+  for Chrome. Three Lightpanda sessions fit in 444 MB; three Chrome sessions
+  needed about 2.9 GB.
+- **Challenge detection:** 20 labeled local cases, 100% vendor, blocking, and
+  solvable accuracy, with 100% blocking precision and recall.
+
+For maximum speed on a list of pages, reuse one session:
+
+```bash
+plague bench --warm --tier fast https://a.example https://b.example
+```
+
+Warm mode skips escalation. Use `fetch()` when a page may need Cloak.
+
+The library exposes the same warm path:
+
+```python
+async with plague.session(tier="fast") as session:
+    for url in urls:
+        await session.goto(url)
+        text = await session.text()
+```
+
 ## Install
 
 ```bash
@@ -114,6 +156,9 @@ plague detect https://protected.example --tier stealth
 
 # Compare engines and latency across a list
 plague bench https://example.com https://news.ycombinator.com --tier auto
+
+# Reuse one session for a fast batch on clean pages
+plague bench --warm --tier fast https://example.com https://news.ycombinator.com
 
 # Compare fingerprint surfaces across every engine
 plague fingerprint --all
@@ -367,6 +412,10 @@ plague/
   cli.py             doctor, fetch, detect, benchmark, fingerprint
 scripts/
   captcha_matrix.py  run demo walls and record results
+benchmarks/
+  server.py          local deterministic pages
+  bench_speed.py     cold, warm, accuracy, memory, concurrency
+  bench_detection.py detector precision and recall
 patches/
   lightpanda-chrome-persona.patch
   README.md

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -21,7 +23,7 @@ from .challenge.actions import click_turnstile
 from .challenge.capture import install as install_capture
 from .challenge.live import extract_hints
 from .config import Config
-from .engines import BaseEngine, EngineUnavailable, default_engines
+from .engines import BaseEngine, EngineUnavailable, Session, default_engines
 from .models import (
     Action,
     Attempt,
@@ -404,6 +406,28 @@ class Plague:
         raise PlagueError(
             f"all engines failed for {url}", attempts
         )
+
+    @asynccontextmanager
+    async def session(
+        self,
+        tier: Tier | str = Tier.FAST,
+        profile: Profile | None = None,
+    ) -> AsyncIterator[Session]:
+        """Open one engine session for repeated navigations.
+
+        Warm mode skips escalation and challenge solving. Use fetch() when a
+        page may need a stronger tier.
+        """
+        chain, _ = self._chain(Tier(tier), need_visual=False)
+        if not chain:
+            raise PlagueError(f"no engine available for tier={tier!r}")
+        name = chain[0]
+        engine = self.engines[name]
+        session = await engine.open(profile or self.config.profile())
+        try:
+            yield session
+        finally:
+            await session.close()
 
     async def probe(
         self,

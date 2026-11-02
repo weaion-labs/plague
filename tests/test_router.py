@@ -162,6 +162,20 @@ def test_fast_tier_stays_on_lightpanda():
     assert result.challenge is None
 
 
+def test_warm_session_reuses_one_engine():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague({"lightpanda": fast})
+
+    async def scenario():
+        async with plague.session(Tier.FAST) as session:
+            await session.goto("https://a.test/")
+            await session.goto("https://b.test/")
+
+    asyncio.run(scenario())
+
+    assert fast.opened == 1
+
+
 def test_screenshot_requirement_skips_lightpanda():
     fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
     stealth = FakeEngine(

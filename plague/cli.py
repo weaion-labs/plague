@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -21,7 +22,7 @@ from rich.progress import (
 from rich.table import Table
 
 from . import __version__
-from .challenge import SolverError
+from .challenge import SolverError, detect
 from .config import Config, project_cache_dir
 from .fingerprint import collect as collect_fingerprint
 from .install import InstallError, install_lightpanda
@@ -460,12 +461,14 @@ def detect_cmd(
 @click.option("--tier", type=click.Choice([t.value for t in Tier]), default="auto")
 @click.option("--timeout", type=int, default=None)
 @click.option("--json", "as_json", is_flag=True)
+@click.option("--warm", is_flag=True, help="Reuse one browser session for all URLs. Skips escalation.")
 def bench(
     urls: tuple[str, ...],
     url_file: str | None,
     tier: str,
     timeout: int | None,
     as_json: bool,
+    warm: bool,
 ) -> None:
     """Run a list of URLs and report engine, status, and latency."""
     targets = list(urls)
@@ -484,32 +487,84 @@ def bench(
         plague = Plague(config)
         rows = []
         try:
-            for target in targets:
-                try:
-                    result = await plague.fetch(target, tier=tier, timeout_ms=timeout)
-                    rows.append(
-                        {
-                            "url": target,
-                            "ok": result.ok,
-                            "engine": result.engine,
-                            "status": result.status,
-                            "ms": result.elapsed_ms,
-                            "challenge": result.challenge.label if result.challenge else None,
-                            "error": None,
-                        }
-                    )
-                except Exception as exc:
-                    rows.append(
-                        {
-                            "url": target,
-                            "ok": False,
-                            "engine": None,
-                            "status": None,
-                            "ms": None,
-                            "challenge": None,
-                            "error": str(exc),
-                        }
-                    )
+            if warm:
+                async with plague.session(tier=tier) as session:
+                    for target in targets:
+                        started = time.monotonic()
+                        try:
+                            nav = await session.goto(
+                                target,
+                                wait_until="domcontentloaded",
+                                timeout_ms=timeout,
+                            )
+                            html = await session.content()
+                            challenge = detect(
+                                status=nav.status,
+                                url=nav.url,
+                                headers=nav.headers,
+                                html=html,
+                            )
+                            rows.append(
+                                {
+                                    "url": target,
+                                    "ok": nav.status is not None
+                                    and nav.status < 400,
+                                    "engine": session.info.name,
+                                    "status": nav.status,
+                                    "ms": int(
+                                        (time.monotonic() - started) * 1000
+                                    ),
+                                    "challenge": challenge.label
+                                    if challenge
+                                    else None,
+                                    "error": None,
+                                }
+                            )
+                        except Exception as exc:
+                            rows.append(
+                                {
+                                    "url": target,
+                                    "ok": False,
+                                    "engine": session.info.name,
+                                    "status": None,
+                                    "ms": int(
+                                        (time.monotonic() - started) * 1000
+                                    ),
+                                    "challenge": None,
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                }
+                            )
+            else:
+                for target in targets:
+                    try:
+                        result = await plague.fetch(
+                            target, tier=tier, timeout_ms=timeout
+                        )
+                        rows.append(
+                            {
+                                "url": target,
+                                "ok": result.ok,
+                                "engine": result.engine,
+                                "status": result.status,
+                                "ms": result.elapsed_ms,
+                                "challenge": result.challenge.label
+                                if result.challenge
+                                else None,
+                                "error": None,
+                            }
+                        )
+                    except Exception as exc:
+                        rows.append(
+                            {
+                                "url": target,
+                                "ok": False,
+                                "engine": None,
+                                "status": None,
+                                "ms": None,
+                                "challenge": None,
+                                "error": str(exc),
+                            }
+                        )
         finally:
             await plague.close()
         return rows
@@ -519,7 +574,7 @@ def bench(
         click.echo(json.dumps(rows, indent=2))
         return
 
-    table = Table(title=f"bench ({tier})")
+    table = Table(title=f"bench ({tier}{', warm' if warm else ''})")
     table.add_column("url", overflow="fold")
     table.add_column("ok", no_wrap=True)
     table.add_column("engine", no_wrap=True)
@@ -546,6 +601,10 @@ def bench(
         console.print(
             f"success {len(ok)}/{len(rows)} | mean {mean:.0f}ms | "
             + ", ".join(f"{k}={v}" for k, v in sorted(engines.items()))
+        )
+    if warm:
+        console.print(
+            "[yellow]warm mode reuses one session and does not escalate[/yellow]"
         )
 
 
