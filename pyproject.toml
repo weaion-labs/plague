@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "plague"
 version = "0.1.0"
-description = "Tiered browser orchestration: Lightpanda speed, CloakBrowser stealth, Chrome compatibility."
+description = "CloakBrowser stealth, Lightpanda speed. A tiered browser router for automation and scraping."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Aquib Javed" }]
+authors = [{ name = "WEAION Labs", email = "weaionlabs@gmail.com" }]
 keywords = ["browser", "automation", "scraping", "playwright", "lightpanda", "stealth"]
 dependencies = [
   "playwright>=1.50",
@@ -25,6 +25,10 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 plague = "plague.cli:main"
+
+[project.urls]
+Homepage = "https://weaionlabs.com"
+Repository = "https://github.com/weaion-labs/plague"
 
 [tool.hatch.build.targets.wheel]
 packages = ["plague"]
