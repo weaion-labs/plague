@@ -1,0 +1,57 @@
+name: Bug report
+description: Something broke in the router, an engine, the MCP server, or a benchmark.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Remove cookies, API keys, and target URLs you cannot share.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the command and the smallest reproduction you can share.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - lightpanda
+        - cloak
+        - chrome
+        - router
+        - challenge detection
+        - solver
+        - batch
+        - MCP server
+        - benchmarks
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `plague doctor`
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove secrets first.
+      render: text

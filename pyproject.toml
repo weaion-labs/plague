@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "plague"
+name = "plague-browser"
 version = "0.1.0"
 description = "CloakBrowser stealth, Lightpanda speed. A tiered browser router for automation and scraping."
 readme = "README.md"
@@ -11,6 +11,15 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "WEAION Labs", email = "weaionlabs@gmail.com" }]
 keywords = ["browser", "automation", "scraping", "playwright", "lightpanda", "stealth"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 dependencies = [
   "playwright>=1.50",
   "cloakbrowser>=0.5.11",
@@ -21,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pillow>=10", "build>=1.2"]
 
 [project.scripts]
 plague = "plague.cli:main"

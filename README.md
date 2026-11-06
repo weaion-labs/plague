@@ -2,6 +2,11 @@
 
 CloakBrowser stealth. Lightpanda speed. One router.
 
+[![tests](https://github.com/weaion-labs/plague/actions/workflows/tests.yml/badge.svg)](https://github.com/weaion-labs/plague/actions/workflows/tests.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![MCP](https://img.shields.io/badge/MCP-stdio-ff6a00.svg)](plague/mcp_server.py)
+
 Plague is the missing router between a fast, rendering-free browser and a real
 stealth Chromium. Clean pages go through a patched Lightpanda with Chrome's
 network fingerprint. Walls escalate to CloakBrowser. Visual or reference work
@@ -94,6 +99,10 @@ Measured on local deterministic pages, `--repeat 3`. Full details in
 | Chrome | 943 ms | 72 ms | 100% | 1052 MB |
 | Playwright Chromium | 255 ms | 67 ms | 100% | 572 MB |
 
+![Cold and warm latency](assets/benchmark-latency.png)
+
+![Memory per session](assets/benchmark-memory.png)
+
 The honest result:
 
 - **One cold fetch:** raw Playwright wins. Lightpanda pays about one second of
@@ -133,6 +142,9 @@ results = await plague.fetch_many(
 ```
 
 ## Install
+
+The PyPI distribution name is `plague-browser`. Until the first release, install
+from the clone:
 
 ```bash
 python -m venv .venv
@@ -458,15 +470,27 @@ plague/
   cli.py             doctor, fetch, detect, batch, benchmark, fingerprint
 scripts/
   captcha_matrix.py  run demo walls and record results
+  make_assets.py     social preview and benchmark cards
 benchmarks/
   server.py          local deterministic pages
   bench_speed.py     cold, warm, accuracy, memory, concurrency
   bench_detection.py detector precision and recall
 patches/
   lightpanda-chrome-persona.patch
+  curl-http2-chrome.patch
   README.md
 docs/
   REVERSE_ENGINEERING.md
+  BENCHMARK_STORY.md
+  LAUNCH.md
+  PUBLISHING.md
+  MCP_PUBLISHING.md
+  ORG_PROFILE_SNIPPET.md
+  GOOD_FIRST_ISSUES.md
+assets/
+  social-preview.png
+  benchmark-latency.png
+  benchmark-memory.png
 tests/
   test_detect.py     signature and false-positive tests
   test_router.py     escalation and solver flow with fake engines
@@ -490,6 +514,9 @@ reloads into the clean page. They validate the full
 detect -> solve -> inject -> reload path for all three token vendors against a
 real browser. `test_mcp.py` starts the MCP server over stdio, lists its tools,
 and calls `doctor`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and pull request rules. Report
+security issues privately as described in [SECURITY.md](SECURITY.md).
 
 ## Verified in this repo
 
@@ -529,6 +556,8 @@ the levers for that class of target.
 - Persistent profile pools with GeoIP and proxy rotation.
 - More solver providers and per-domain routing policies.
 - Success and cost telemetry per target.
+
+If Plague saves you time, a star helps other people find it.
 
 ## Legal and ethical note
 
