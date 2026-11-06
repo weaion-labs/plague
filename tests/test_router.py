@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from plague.challenge.solvers.base import SolveResult
+from plague.engines import EngineUnavailable
 from plague.models import Capability, EngineInfo, Tier
 from plague.router import Plague, PlagueError
 from plague.config import Config
@@ -108,6 +109,11 @@ class FakeEngine:
         return {"name": self.info.name, "available": True}
 
 
+class UnavailableEngine(FakeEngine):
+    async def open(self, profile):
+        raise EngineUnavailable("missing binary")
+
+
 class FakeSolver:
     name = "fake"
 
@@ -174,6 +180,118 @@ def test_warm_session_reuses_one_engine():
     asyncio.run(scenario())
 
     assert fast.opened == 1
+
+
+def test_warm_session_falls_back_when_first_engine_unavailable():
+    unavailable = UnavailableEngine("lightpanda", [])
+    stealth = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
+    )
+    plague = make_plague({"lightpanda": unavailable, "cloak": stealth})
+
+    async def scenario():
+        async with plague.session(Tier.AUTO) as session:
+            assert session.info.name == "cloak"
+            await session.goto("https://a.test/")
+
+    asyncio.run(scenario())
+
+    assert stealth.opened == 1
+
+
+def test_fetch_many_warm_reuses_one_session():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague({"lightpanda": fast})
+
+    results = asyncio.run(
+        plague.fetch_many(
+            ["https://a.test/", "https://b.test/"],
+            tier=Tier.FAST,
+            warm=True,
+            workers=1,
+        )
+    )
+
+    assert len(results) == 2
+    assert all(result.ok for result in results)
+    assert fast.opened == 1
+
+
+def test_fetch_many_workers_open_multiple_sessions():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague({"lightpanda": fast})
+
+    results = asyncio.run(
+        plague.fetch_many(
+            ["https://a.test/", "https://b.test/", "https://c.test/"],
+            tier=Tier.FAST,
+            warm=True,
+            workers=2,
+        )
+    )
+
+    assert len(results) == 3
+    assert all(result.ok for result in results)
+    assert fast.opened == 2
+
+
+def test_fetch_many_warm_reports_challenge_without_escalation():
+    fast = FakeEngine("lightpanda", [{"status": 403, "html": CF_HTML}])
+    plague = make_plague({"lightpanda": fast})
+
+    results = asyncio.run(
+        plague.fetch_many(
+            ["https://blocked.test/"],
+            tier=Tier.FAST,
+            warm=True,
+            escalate=False,
+        )
+    )
+
+    assert results[0].ok is False
+    assert results[0].challenge is not None
+    assert results[0].challenge.vendor == "cloudflare"
+    assert results[0].attempts[0].challenge == "cloudflare:js"
+
+
+def test_fetch_many_warm_escalates_on_challenge():
+    fast = FakeEngine("lightpanda", [{"status": 403, "html": CF_HTML}])
+    stealth = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
+    )
+    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+
+    results = asyncio.run(
+        plague.fetch_many(
+            ["https://blocked.test/"],
+            tier=Tier.FAST,
+            warm=True,
+            escalate=True,
+        )
+    )
+
+    assert results[0].ok is True
+    assert results[0].engine == "cloak"
+    assert results[0].attempts[0].engine == "lightpanda"
+    assert results[0].attempts[0].ok is False
+    assert stealth.opened == 1
+
+
+def test_fetch_many_cold_opens_per_url():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague({"lightpanda": fast})
+
+    results = asyncio.run(
+        plague.fetch_many(
+            ["https://a.test/", "https://b.test/"],
+            tier=Tier.FAST,
+            warm=False,
+            workers=1,
+        )
+    )
+
+    assert all(result.ok for result in results)
+    assert fast.opened == 2
 
 
 def test_screenshot_requirement_skips_lightpanda():

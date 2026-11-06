@@ -79,6 +79,7 @@ memory number is the stable and important one: about 148 MB per session.
   escalate only when a wall appears.
 - Use `plague bench --warm --tier fast URL...` to measure a real target list
   with one reused session.
+- Use `plague batch --tier fast --workers 4 --escalate URL...` to process it.
 
 Warm mode skips escalation by design. If a page in the list hits a wall, it is
 reported, not retried on Cloak.

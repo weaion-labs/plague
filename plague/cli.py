@@ -608,6 +608,116 @@ def bench(
         )
 
 
+@main.command()
+@click.argument("urls", nargs=-1)
+@click.option("--file", "url_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--tier", type=click.Choice([t.value for t in Tier]), default="auto")
+@click.option("--workers", type=int, default=4, show_default=True)
+@click.option("--timeout", type=int, default=None)
+@click.option("--escalate", is_flag=True, help="Fall back to the next tier for blocked pages.")
+@click.option("--no-warm", is_flag=True, help="Open a fresh session per URL.")
+@click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write JSON results here.")
+@click.option("--screenshot-dir", type=click.Path(file_okay=False), help="Save one PNG per page on visual tiers.")
+@click.option("--json", "as_json", is_flag=True)
+def batch(
+    urls: tuple[str, ...],
+    url_file: str | None,
+    tier: str,
+    workers: int,
+    timeout: int | None,
+    escalate: bool,
+    no_warm: bool,
+    out_path: str | None,
+    screenshot_dir: str | None,
+    as_json: bool,
+) -> None:
+    """Fetch many URLs with warm sessions and worker concurrency."""
+    targets = list(urls)
+    if url_file:
+        targets += [
+            line.strip()
+            for line in Path(url_file).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    if not targets:
+        raise click.UsageError("provide URLs or --file")
+
+    config = _config(timeout=timeout)
+
+    async def run():
+        plague = Plague(config)
+        try:
+            return await plague.fetch_many(
+                targets,
+                tier=tier,
+                workers=workers,
+                warm=not no_warm,
+                escalate=escalate,
+                timeout_ms=timeout,
+                screenshot_dir=screenshot_dir,
+            )
+        finally:
+            await plague.close()
+
+    try:
+        results = asyncio.run(run())
+    except Exception as exc:
+        err_console.print(f"[red]batch failed:[/red] {exc}")
+        raise SystemExit(1) from exc
+
+    payload = [result_dict(result, include_html=False) for result in results]
+    if out_path:
+        path = Path(out_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title=f"batch ({tier}{', warm' if not no_warm else ', cold'})")
+    table.add_column("url", overflow="fold")
+    table.add_column("ok", no_wrap=True)
+    table.add_column("engine", no_wrap=True)
+    table.add_column("status", justify="right")
+    table.add_column("ms", justify="right")
+    table.add_column("challenge", overflow="fold")
+    for result in results:
+        challenge_label = (
+            result.challenge.label
+            if result.challenge
+            else (result.attempts[-1].challenge if result.attempts else "")
+        )
+        table.add_row(
+            result.url,
+            "[green]yes[/green]" if result.ok else "[red]no[/red]",
+            result.engine or "",
+            str(result.status or ""),
+            str(result.elapsed_ms),
+            challenge_label or "",
+        )
+    console.print(table)
+
+    ok = [result for result in results if result.ok]
+    if ok:
+        mean = sum(result.elapsed_ms for result in ok) / len(ok)
+        engines: dict[str, int] = {}
+        for result in ok:
+            key = result.engine or "unknown"
+            engines[key] = engines.get(key, 0) + 1
+        escalated = sum(1 for result in results if len(result.attempts) > 1)
+        console.print(
+            f"success {len(ok)}/{len(results)} | mean {mean:.0f}ms | "
+            f"escalated {escalated} | "
+            + ", ".join(f"{k}={v}" for k, v in sorted(engines.items()))
+        )
+    if not no_warm:
+        console.print(
+            "[yellow]warm batch reuses one session per worker"
+            + ("; escalation on" if escalate else "; escalation off")
+            + "[/yellow]"
+        )
+
+
 @main.command("install-lightpanda")
 @click.option("--force", is_flag=True)
 def install_lightpanda_cmd(force: bool) -> None:

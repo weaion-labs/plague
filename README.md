@@ -1,7 +1,11 @@
 # plague
 
-Tiered browser orchestration for people who want Lightpanda speed without
-giving up Chrome compatibility or stealth.
+CloakBrowser stealth. Lightpanda speed. One router.
+
+Plague is the missing router between a fast, rendering-free browser and a real
+stealth Chromium. Clean pages go through a patched Lightpanda with Chrome's
+network fingerprint. Walls escalate to CloakBrowser. Visual or reference work
+goes to stock Chrome.
 
 Plague is not a new browser engine. It is a router with three interchangeable
 backends, plus a challenge detector and a token-solver layer:
@@ -26,6 +30,10 @@ The important design decision: these engines are alternatives, not layers.
 Chrome and CloakBrowser are both Chromium. Lightpanda is a different species.
 Plague picks one per attempt and escalates when a wall appears. It never
 pretends a rendering-free browser is Chrome.
+
+**Measured:** 71 ms warm p50, 155 MB per session, 100% on the local extraction
+suite, and a matching Chrome TLS cipher and HTTP/2 fingerprint. See
+[Speed and accuracy](#speed-and-accuracy).
 
 ## What it actually does
 
@@ -98,13 +106,14 @@ The honest result:
 - **Challenge detection:** 20 labeled local cases, 100% vendor, blocking, and
   solvable accuracy, with 100% blocking precision and recall.
 
-For maximum speed on a list of pages, reuse one session:
+For maximum speed on a list of pages, use a warm batch:
 
 ```bash
-plague bench --warm --tier fast https://a.example https://b.example
+plague batch --tier fast --workers 4 urls.txt
 ```
 
-Warm mode skips escalation. Use `fetch()` when a page may need Cloak.
+Warm mode skips escalation by default. Add `--escalate` to fall back to the
+next tier when a page is blocked.
 
 The library exposes the same warm path:
 
@@ -113,6 +122,14 @@ async with plague.session(tier="fast") as session:
     for url in urls:
         await session.goto(url)
         text = await session.text()
+```
+
+Or use the batch API directly:
+
+```python
+results = await plague.fetch_many(
+    urls, tier="fast", workers=4, warm=True, escalate=False
+)
 ```
 
 ## Install
@@ -160,9 +177,34 @@ plague bench https://example.com https://news.ycombinator.com --tier auto
 # Reuse one session for a fast batch on clean pages
 plague bench --warm --tier fast https://example.com https://news.ycombinator.com
 
+# Production batch: one warm session per worker, optional escalation
+plague batch --tier fast --workers 4 --escalate urls.txt
+
 # Compare fingerprint surfaces across every engine
 plague fingerprint --all
 ```
+
+## Batch mode
+
+`plague batch` is the production fast path. It opens one session per worker,
+reuses it for every URL, and reports a challenge instead of escalating unless
+you ask.
+
+```bash
+plague batch --tier fast --workers 4 urls.txt
+plague batch --tier fast --workers 4 --escalate urls.txt
+plague batch --tier stealth --workers 2 --screenshot-dir out/shots urls.txt
+plague batch --tier fast --workers 4 --out out/results.json urls.txt
+```
+
+- `--workers 4` is reasonable for Lightpanda. Use 2 or fewer for Chrome or
+  Cloak because each session costs about 850 MB to 1 GB.
+- `--escalate` re-runs a blocked page through the next tier. It is slower but
+  keeps the batch correct on protected pages.
+- `--no-warm` opens a fresh session per URL, which is the old cold behavior.
+- `--screenshot-dir` only writes files on visual tiers. Lightpanda has no
+  screenshot.
+- Results are also available as JSON with `--json` or `--out`.
 
 `--tier` accepts `auto`, `fast`, `stealth`, and `chrome`.
 
@@ -211,12 +253,16 @@ Tools exposed to the agent:
 | `plague_fetch` | Fetch a URL through the tier router |
 | `plague_detect` | Classify a challenge wall without solving |
 | `plague_fingerprint` | Compare navigator, screen, client hints, canvas |
-| `plague_bench` | Fetch a list of URLs and report engine and latency |
+| `plague_bench` | Warm batch with workers and optional escalation |
 | `plague_captcha_demos` | Run the public demo walls and classify results |
 
 The server prefers the patched Lightpanda binary at
 `.plague/lightpanda-src/zig-out/bin/lightpanda` when it exists. It also exposes
 `plague://docs/reverse-engineering` and `plague://docs/readme` as resources.
+
+`plague_bench` is warm and parallel by default. Pass `warm=false` for cold
+fetches, `workers=N` for concurrency, and `escalate=true` to fall back to the
+next tier on a blocked page.
 
 Run it manually for debugging:
 
@@ -409,7 +455,7 @@ plague/
     inject.py        token fields, events, reCAPTCHA callbacks
     actions.py       Turnstile checkbox clicks
     solvers/         CapSolver, 2Captcha, manual
-  cli.py             doctor, fetch, detect, benchmark, fingerprint
+  cli.py             doctor, fetch, detect, batch, benchmark, fingerprint
 scripts/
   captcha_matrix.py  run demo walls and record results
 benchmarks/
@@ -475,6 +521,14 @@ vendor behavior changes.
 The free headless Cloak build still fails the NopeCHA Cloudflare demo. That is
 a real boundary: a newer paid build, a headed window, and a residential IP are
 the levers for that class of target.
+
+## Roadmap
+
+- Close the four missing TLS extensions: `001b`, `0023`, `44cd`, `fe0d`.
+- Canvas and WebGL rasterization, if Lightpanda grows a layout engine.
+- Persistent profile pools with GeoIP and proxy rotation.
+- More solver providers and per-domain routing policies.
+- Success and cost telemetry per target.
 
 ## Legal and ethical note
 

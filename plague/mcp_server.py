@@ -41,7 +41,10 @@ Plague is a tiered browser router: Lightpanda first for speed, CloakBrowser when
 a wall appears, stock Chrome as the reference. Use `doctor` to see what is
 available. Use `fetch` to retrieve a page, `detect` to classify a challenge
 without solving, `fingerprint` to compare JS and network surfaces, and `bench`
-for a list of URLs. `captcha_demos` runs the public demo walls.
+for a list of URLs. `bench` is warm and parallel by default: it reuses one
+session per worker. Set escalate=True to fall back to the next tier when a warm
+page is blocked. `captcha_demos` runs the public demo walls cold, with
+escalation.
 
 Without solver keys, token walls are detected and classified but no token is
 purchased. The patched Lightpanda binary is used automatically when present at
@@ -220,41 +223,71 @@ async def bench(
     urls: list[str],
     tier: str = "auto",
     timeout_ms: int = 30_000,
+    warm: bool = True,
+    workers: int = 4,
+    escalate: bool = False,
 ) -> dict[str, Any]:
-    """Fetch a list of URLs and report engine, status, challenge, and latency."""
+    """Fetch a list of URLs and report engine, status, challenge, and latency.
+
+    Warm mode reuses one session per worker and is the fast path. Set
+    escalate=True to fall back to the next tier when a warm page is blocked.
+    """
+    rows = await _bench_rows(
+        urls,
+        tier=tier,
+        timeout_ms=timeout_ms,
+        warm=warm,
+        workers=workers,
+        escalate=escalate,
+    )
+    return {
+        "rows": rows,
+        "warm": warm,
+        "workers": workers,
+        "escalate": escalate,
+    }
+
+
+async def _bench_rows(
+    urls: list[str],
+    *,
+    tier: str,
+    timeout_ms: int,
+    warm: bool,
+    workers: int,
+    escalate: bool,
+) -> list[dict[str, Any]]:
     config = _config(timeout_ms=timeout_ms)
     plague = Plague(config)
-    rows: list[dict[str, Any]] = []
     try:
-        for url in urls:
-            try:
-                result = await plague.fetch(
-                    url, tier=tier, timeout_ms=timeout_ms
-                )
-                rows.append(
-                    {
-                        "url": url,
-                        "ok": result.ok,
-                        "engine": result.engine,
-                        "status": result.status,
-                        "ms": result.elapsed_ms,
-                        "challenge": result.challenge.label
-                        if result.challenge
-                        else None,
-                        "solved": result.solved,
-                    }
-                )
-            except Exception as exc:
-                rows.append(
-                    {
-                        "url": url,
-                        "ok": False,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
+        results = await plague.fetch_many(
+            urls,
+            tier=tier,
+            warm=warm,
+            workers=workers,
+            escalate=escalate,
+            timeout_ms=timeout_ms,
+        )
     finally:
         await plague.close()
-    return {"rows": rows}
+
+    return [
+        {
+            "url": result.url,
+            "ok": result.ok,
+            "engine": result.engine,
+            "status": result.status,
+            "ms": result.elapsed_ms,
+            "challenge": result.challenge.label
+            if result.challenge
+            else (
+                result.attempts[-1].challenge if result.attempts else None
+            ),
+            "solved": result.solved,
+            "attempts": len(result.attempts),
+        }
+        for result in results
+    ]
 
 
 DEMOS = [
@@ -277,12 +310,24 @@ async def captcha_demos(
     token walls are detected but not solved.
     """
     targets = urls or DEMOS
-    result = await bench(targets, tier=tier, timeout_ms=timeout_ms)
-    result["solver_keys"] = {
-        "capsolver": bool(os.environ.get("CAPSOLVER_API_KEY")),
-        "twocaptcha": bool(os.environ.get("TWOCAPTCHA_API_KEY")),
+    rows = await _bench_rows(
+        targets,
+        tier=tier,
+        timeout_ms=timeout_ms,
+        warm=False,
+        workers=1,
+        escalate=True,
+    )
+    return {
+        "rows": rows,
+        "warm": False,
+        "workers": 1,
+        "escalate": True,
+        "solver_keys": {
+            "capsolver": bool(os.environ.get("CAPSOLVER_API_KEY")),
+            "twocaptcha": bool(os.environ.get("TWOCAPTCHA_API_KEY")),
+        },
     }
-    return result
 
 
 @mcp.resource("plague://docs/reverse-engineering")

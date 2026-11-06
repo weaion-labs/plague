@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from .challenge import (
     SolveTask,
@@ -407,6 +411,246 @@ class Plague:
             f"all engines failed for {url}", attempts
         )
 
+    async def fetch_many(
+        self,
+        urls: Iterable[str],
+        *,
+        tier: Tier | str = Tier.AUTO,
+        workers: int = 1,
+        warm: bool = True,
+        escalate: bool = False,
+        timeout_ms: int | None = None,
+        screenshot_dir: str | None = None,
+    ) -> list[Result]:
+        """Fetch many URLs with optional warm sessions and worker concurrency.
+
+        Warm mode reuses one engine session per worker. It skips escalation
+        unless escalate=True, in which case a blocking page falls back to the
+        next tier through the normal router.
+        """
+        targets = list(urls)
+        if not targets:
+            return []
+        timeout = timeout_ms or self.config.timeout_ms
+        if screenshot_dir:
+            Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
+
+        if not warm:
+            semaphore = asyncio.Semaphore(max(1, workers))
+
+            async def cold_one(target: str) -> Result:
+                async with semaphore:
+                    try:
+                        return await self.fetch(
+                            target,
+                            tier=tier,
+                            timeout_ms=timeout,
+                            screenshot=self._screenshot_path(
+                                screenshot_dir, target
+                            )
+                            if screenshot_dir
+                            else None,
+                        )
+                    except PlagueError as exc:
+                        result = self._error_result(target, exc)
+                        result.attempts = exc.attempts or result.attempts
+                        return result
+                    except Exception as exc:
+                        return self._error_result(target, exc)
+
+            return list(
+                await asyncio.gather(*(cold_one(target) for target in targets))
+            )
+
+        worker_count = max(1, min(workers, len(targets)))
+        results: list[Result | None] = [None] * len(targets)
+        queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        for index, target in enumerate(targets):
+            queue.put_nowait((index, target))
+
+        async def worker() -> None:
+            try:
+                async with self.session(tier=tier) as session:
+                    while True:
+                        try:
+                            index, target = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            return
+                        results[index] = await self._warm_fetch(
+                            session,
+                            target,
+                            escalate,
+                            timeout,
+                            screenshot_dir,
+                        )
+            except Exception as exc:
+                log.warning("warm worker stopped: %s", exc)
+
+        await asyncio.gather(*(worker() for _ in range(worker_count)))
+        return [
+            result
+            if result is not None
+            else self._error_result(
+                target, RuntimeError("warm worker stopped before this URL")
+            )
+            for target, result in zip(targets, results)
+        ]
+
+    async def _warm_fetch(
+        self,
+        session: Session,
+        url: str,
+        escalate: bool,
+        timeout_ms: int,
+        screenshot_dir: str | None,
+    ) -> Result:
+        started = time.monotonic()
+        engine_name = session.info.name
+
+        def elapsed() -> int:
+            return int((time.monotonic() - started) * 1000)
+
+        try:
+            nav = await session.goto(
+                url, wait_until="domcontentloaded", timeout_ms=timeout_ms
+            )
+            html = await session.content()
+            challenge = detect(
+                status=nav.status,
+                url=nav.url,
+                headers=nav.headers,
+                html=html,
+            )
+
+            if challenge and challenge.blocking:
+                attempt = Attempt(
+                    engine=engine_name,
+                    ok=False,
+                    elapsed_ms=elapsed(),
+                    status=nav.status,
+                    challenge=challenge.label,
+                    error="challenge in warm mode",
+                )
+                if escalate:
+                    next_tier = {
+                        "lightpanda": Tier.STEALTH,
+                        "cloak": Tier.CHROME,
+                        "chrome": Tier.CHROME,
+                    }.get(engine_name, Tier.CHROME)
+                    try:
+                        cold = await self.fetch(
+                            url,
+                            tier=next_tier,
+                            timeout_ms=timeout_ms,
+                            screenshot=self._screenshot_path(
+                                screenshot_dir, url
+                            )
+                            if screenshot_dir
+                            else None,
+                        )
+                    except PlagueError as exc:
+                        result = self._error_result(url, exc, engine=engine_name)
+                        result.attempts = [attempt, *exc.attempts]
+                        if exc.attempts:
+                            result.engine = exc.attempts[-1].engine
+                            result.status = exc.attempts[-1].status
+                        result.elapsed_ms = elapsed()
+                        return result
+                    cold.attempts.insert(0, attempt)
+                    return cold
+
+                return Result(
+                    url=url,
+                    final_url=nav.url,
+                    status=nav.status,
+                    title=await session.title(),
+                    html=html,
+                    text=await session.text(),
+                    engine=engine_name,
+                    attempts=[attempt],
+                    challenge=challenge,
+                    solved=False,
+                    elapsed_ms=elapsed(),
+                )
+
+            title = await session.title()
+            text = await session.text()
+            shot = None
+            if screenshot_dir and session.supports(Capability.VISUAL):
+                shot = await session.screenshot(
+                    self._screenshot_path(screenshot_dir, url)
+                )
+            try:
+                cookies = await session.cookies()
+            except Exception:
+                cookies = None
+
+            attempt = Attempt(
+                engine=engine_name,
+                ok=True,
+                elapsed_ms=elapsed(),
+                status=nav.status,
+                challenge=challenge.label if challenge else None,
+            )
+            return Result(
+                url=url,
+                final_url=nav.url,
+                status=nav.status,
+                title=title,
+                html=html,
+                text=text,
+                engine=engine_name,
+                attempts=[attempt],
+                challenge=challenge,
+                solved=False,
+                elapsed_ms=elapsed(),
+                screenshot=shot,
+                cookies=cookies,
+            )
+        except Exception as exc:
+            return self._error_result(
+                url, exc, engine=engine_name, elapsed_ms=elapsed()
+            )
+
+    @staticmethod
+    def _screenshot_path(directory: str | None, url: str) -> str | None:
+        if not directory:
+            return None
+        parsed = urlparse(url)
+        label = f"{parsed.netloc}{parsed.path}".strip("/") or "page"
+        label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)[:80]
+        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+        return str(Path(directory) / f"{label}-{digest}.png")
+
+    @staticmethod
+    def _error_result(
+        url: str,
+        exc: Exception,
+        *,
+        engine: str | None = None,
+        elapsed_ms: int = 0,
+    ) -> Result:
+        return Result(
+            url=url,
+            final_url=url,
+            status=None,
+            title="",
+            html="",
+            text="",
+            engine=engine,
+            attempts=[
+                Attempt(
+                    engine=engine or "router",
+                    ok=False,
+                    elapsed_ms=elapsed_ms,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            ],
+            challenge=None,
+            solved=False,
+            elapsed_ms=elapsed_ms,
+        )
+
     @asynccontextmanager
     async def session(
         self,
@@ -416,18 +660,29 @@ class Plague:
         """Open one engine session for repeated navigations.
 
         Warm mode skips escalation and challenge solving. Use fetch() when a
-        page may need a stronger tier.
+        page may need a stronger tier. If the first engine is unavailable, the
+        next engine in the tier chain is tried.
         """
         chain, _ = self._chain(Tier(tier), need_visual=False)
         if not chain:
             raise PlagueError(f"no engine available for tier={tier!r}")
-        name = chain[0]
-        engine = self.engines[name]
-        session = await engine.open(profile or self.config.profile())
-        try:
-            yield session
-        finally:
-            await session.close()
+        session_profile = profile or self.config.profile()
+        last_error: Exception | None = None
+        for name in chain:
+            engine = self.engines[name]
+            try:
+                session = await engine.open(session_profile)
+            except EngineUnavailable as exc:
+                last_error = exc
+                continue
+            try:
+                yield session
+            finally:
+                await session.close()
+            return
+        raise PlagueError(
+            f"no engine available for tier={tier!r}: {last_error}"
+        )
 
     async def probe(
         self,
