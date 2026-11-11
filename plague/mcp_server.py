@@ -942,6 +942,15 @@ async def _capture(
 
 
 async def _session_cookies(url: str) -> list[dict[str, Any]]:
+    manager = RUNTIME.handoff
+    if manager is not None and manager.running:
+        try:
+            async with manager.session() as session:
+                rows = await session.cookies([url])
+        except Exception:
+            rows = []
+        if rows:
+            return list(rows)
     for key in ("stealth", "chrome", "fast"):
         entry = RUNTIME._sessions.get(key)
         if entry is None:
@@ -950,15 +959,6 @@ async def _session_cookies(url: str) -> list[dict[str, Any]]:
             rows = await entry.session.cookies([url])
         except Exception:
             continue
-        if rows:
-            return list(rows)
-    manager = RUNTIME.handoff
-    if manager is not None and manager.running:
-        try:
-            async with manager.session() as session:
-                rows = await session.cookies([url])
-        except Exception:
-            rows = []
         if rows:
             return list(rows)
     return []
