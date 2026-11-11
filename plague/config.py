@@ -143,6 +143,7 @@ class Config:
     mcp_keep_stealth: bool = False
     host_tier_ttl_s: int = 600
     handoff_port: int = 0  # 0 picks a free port
+    handoff_ozone: str = "auto"  # auto | wayland | x11
     handoff_profile_dir: str = field(
         default_factory=lambda: str(project_cache_dir() / "handoff-profile")
     )
@@ -186,6 +187,7 @@ class Config:
             mcp_keep_stealth=_env_bool("PLAGUE_MCP_KEEP_STEALTH", False),
             host_tier_ttl_s=_env_int("PLAGUE_HOST_TIER_TTL", 600),
             handoff_port=_env_int("PLAGUE_HANDOFF_PORT", 0),
+            handoff_ozone=os.environ.get("PLAGUE_HANDOFF_OZONE", "auto"),
             handoff_profile_dir=os.environ.get("PLAGUE_HANDOFF_PROFILE_DIR")
             or str(project_cache_dir() / "handoff-profile"),
             screenshot_dir=os.environ.get("PLAGUE_SCREENSHOT_DIR")

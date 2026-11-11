@@ -8,6 +8,7 @@ limit.
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from typing import Any, Deque
 
@@ -43,12 +44,28 @@ class Observer:
 
     def _on_request(self, request: Any) -> None:
         try:
+            headers = {
+                str(key): str(value)
+                for key, value in (
+                    getattr(request, "headers", None) or {}
+                ).items()
+            }
+        except Exception:
+            headers = {}
+        try:
+            post_data = getattr(request, "post_data", None)
+        except Exception:
+            post_data = None
+        try:
             entry = {
                 "method": str(request.method),
                 "url": str(request.url),
                 "resource_type": str(getattr(request, "resource_type", "")),
                 "status": None,
                 "ok": None,
+                "request_headers": headers,
+                "post_data": str(post_data)[:4_000] if post_data else None,
+                "started": time.time(),
             }
         except Exception:
             return
@@ -65,6 +82,9 @@ class Observer:
         try:
             entry["status"] = int(response.status)
             entry["ok"] = bool(response.ok)
+            entry["status_text"] = str(
+                getattr(response, "status_text", "") or ""
+            )
             content_type = ""
             try:
                 content_type = (
@@ -75,6 +95,17 @@ class Observer:
             except Exception:
                 content_type = ""
             entry["mime"] = str(content_type).split(";")[0].strip()
+            try:
+                entry["response_headers"] = {
+                    str(key): str(value)
+                    for key, value in (response.headers or {}).items()
+                }
+            except Exception:
+                entry["response_headers"] = {}
+            try:
+                entry["timing"] = dict(response.request.timing or {})
+            except Exception:
+                entry["timing"] = {}
             entry["_response"] = response
         except Exception:
             pass
@@ -112,6 +143,7 @@ class Observer:
         filter: str | None = None,
         limit: int = 100,
         include_body: bool = False,
+        include_headers: bool = False,
         max_body_chars: int = 2_000,
     ) -> list[dict[str, Any]]:
         needle = (filter or "").lower()
@@ -122,7 +154,23 @@ class Observer:
         ][-max(1, limit) :]
         rows: list[dict[str, Any]] = []
         for item in items:
-            row = {key: value for key, value in item.items() if key != "_response"}
+            row = {
+                key: item.get(key)
+                for key in (
+                    "method",
+                    "url",
+                    "resource_type",
+                    "status",
+                    "ok",
+                    "mime",
+                    "error",
+                )
+                if key in item
+            }
+            if include_headers:
+                row["request_headers"] = item.get("request_headers") or {}
+                row["response_headers"] = item.get("response_headers") or {}
+                row["post_data"] = item.get("post_data")
             response = item.get("_response")
             mime = str(row.get("mime") or "")
             textish = (

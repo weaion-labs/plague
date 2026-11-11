@@ -159,6 +159,7 @@ from the clone:
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
+pip install -e ".[impersonate]"   # optional: browser-impersonated API replay
 playwright install chromium
 
 # Lightpanda nightly for this platform
@@ -275,6 +276,7 @@ Tools exposed to the agent:
 | `plague_snapshot` | Interactive elements as compact refs such as `e3` |
 | `plague_act` | Click, fill, press, select, scroll, back, goto on refs or selectors |
 | `plague_network` | Request log with method, URL, resource type, and status |
+| `plague_network_export` | Export the request log as HAR or curl commands |
 | `plague_console` | Console messages and uncaught page errors |
 | `plague_api_request` | Raw HTTP request with the warm session cookies |
 | `plague_screenshot` | Capture the current rendering page |
@@ -351,14 +353,21 @@ console filter=error
 return an empty list with a note.
 
 `api_request` replays a request with the cookies from the active warm session.
-It is the fast path for testing an endpoint you just observed. It uses `httpx`,
-not the browser, so it has no Chrome TLS or HTTP/2 fingerprint and a WAF may
-reject it. Use it for authenticated APIs, not for protected HTML pages.
+It is the fast path for testing an endpoint you just observed. By default it
+uses `curl_cffi` with Chrome impersonation, so it carries a real Chrome TLS and
+HTTP/2 fingerprint instead of a Python one. Set `impersonate="none"` to force
+plain `httpx`, or install the extra with
+`pip install -e ".[impersonate]"` if it is missing.
+
+`network_export` writes the observed log as HAR, which DevTools and report
+tooling understand, or as ready-to-run curl commands. Both contain live cookies
+and headers, so treat the files as secrets.
 
 ```text
 network filter=api include_body=true
-api_request GET https://target/api/users use_cookies=true
-api_request PATCH https://target/api/users/7 json_body={"role":"admin"}
+api_request GET https://target/api/users
+network_export format=har filter=api
+network_export format=curl filter=api
 ```
 
 ### Screenshots
@@ -409,6 +418,27 @@ handoff url=https://target.example/login
 # -> CDP URL on 127.0.0.1, dedicated profile, cookies seeded if available
 ```
 
+On Linux the launch picks Wayland when the session provides it and falls back to
+X11. Force one with `PLAGUE_HANDOFF_OZONE=wayland` or `x11`. On macOS and
+Windows the display check is skipped.
+
+To drive a browser you started yourself, or one on another machine, use attach
+mode. It skips the display check entirely:
+
+```text
+handoff attach_to=http://127.0.0.1:9222 url=https://target.example/login
+```
+
+Chrome 136 and later require a non-default profile for remote debugging:
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/plague-handoff
+```
+
+For a headless VPS, run Chrome on your workstation and forward the port over
+SSH (`ssh -L 9222:127.0.0.1:9222 vps`), then attach. For a cloud browser, pass
+its CDP URL to `attach_to`.
+
 The human completes the login or challenge in the headed window. The agent can
 then keep driving it with `act tier="handoff"`, or attach another harness to the
 returned endpoint:
@@ -417,9 +447,9 @@ returned endpoint:
 npx @playwright/mcp@latest --cdp-endpoint=http://127.0.0.1:9222
 ```
 
-`release` closes the browser. The profile is separate from the daily Chrome
-profile and from the platform profile. Keep target work and platform work in
-different directories.
+`release` closes a browser Plague launched, and only detaches from one it
+attached to. The profile is separate from the daily Chrome profile and from the
+platform profile. Keep target work and platform work in different directories.
 
 The handoff observer sees traffic only while a Plague tool is attached, so for a
 continuous capture of a human-driven session use the Chrome DevTools protocol
@@ -599,6 +629,7 @@ All settings can come from the environment.
 | `PLAGUE_HOST_TIER_TTL` | 600 | Seconds a host stays pinned to stealth or chrome after an explicit fetch |
 | `PLAGUE_SCREENSHOT_DIR` | .plague/screenshots | Default output directory for `screenshot` |
 | `PLAGUE_HANDOFF_PORT` | 0 | Fixed CDP port for the headed handoff, or 0 for a free port |
+| `PLAGUE_HANDOFF_OZONE` | auto | `auto`, `wayland`, or `x11` for the headed handoff |
 | `PLAGUE_HANDOFF_PROFILE_DIR` | .plague/handoff-profile | Profile directory for the headed handoff |
 | `PLAGUE_HOME` | ./.plague or ~/.cache/plague | Cache and log directory |
 
@@ -635,8 +666,9 @@ plague/
   interact.py        action parsing and execution
   snapshot.py        ref-based interactive element snapshots
   observe.py         bounded request, console, and error log
+  harexport.py       HAR and curl export from the request log
   storage.py         named storage states for session reuse
-  http.py            raw HTTP with warm-session cookies
+  http.py            raw HTTP with browser impersonation
   recipes.py         saved action lists for deterministic replay
   handoff.py         headed Chrome over CDP, dedicated profile
   mcp_server.py      project-local stdio MCP server

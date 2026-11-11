@@ -10,10 +10,12 @@
   scroll, back, and goto against a ref or a CSS selector.
 - Added `fetch` actions so a read can fill a form or click a control before
   extraction.
-- Added headed handoff: `handoff` launches a dedicated-profile Chrome with a
-  CDP endpoint, seeds cookies from the live session, and returns an attach hint.
-  `act tier="handoff"` drives it directly, or Playwright MCP can attach over CDP.
-  `release` closes it.
+- Added headed handoff: `handoff` launches a dedicated-profile Chrome, or
+  attaches to an existing CDP endpoint with `attach_to`, seeds cookies from the
+  live session, and returns an attach hint. Linux launches pick Wayland when
+  available, with `PLAGUE_HANDOFF_OZONE` to force it. `act tier="handoff"`
+  drives it directly, or Playwright MCP can attach over CDP. `release` closes a
+  launched browser and detaches from an attached one.
 - Added `PLAGUE_ALLOWED_DOMAINS` navigation allowlist and
   `PLAGUE_SOLVE_DOMAINS` solver allowlist.
 - Added saved action recipes: `recipe_save`, `recipe_run`, `recipe_list`, and
@@ -31,8 +33,11 @@
 - Interactive tools now default to the most recently used tier, so follow-up
   `act`, `snapshot`, `network`, and `screenshot` calls stay on the same session.
 - Added `set_files` as an action type for file uploads.
+- Added `network_export` for HAR and curl export, and header capture in
+  `network include_headers=true`.
 - Added `api_request` for authenticated API testing with the warm session
-  cookies. It uses `httpx`, not the browser fingerprint.
+  cookies. It uses `curl_cffi` Chrome impersonation by default, with plain
+  `httpx` as the fallback.
 - Added warm-session, handoff, and policy telemetry to `doctor`.
 - Refactored challenge handling into one resolver used by both cold and warm
   fetches, so warm pages get JS interstitial waits and token solving too.

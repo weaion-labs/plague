@@ -2,12 +2,13 @@
 
 The router stays cheap and headless. When a page needs a human (login, 2FA,
 payment, a risk-score wall) it launches a real headed Chrome with a dedicated
-profile and a debugging port, then hands the agent a CDP URL. Either the same
-MCP server can keep driving it through ``act``, or an external harness such as
-Playwright MCP can attach with ``--cdp-endpoint``.
+profile and a debugging port, or attaches to a Chrome that is already running.
+Either the same MCP server can keep driving it through ``act``, or an external
+harness such as Playwright MCP can attach with ``--cdp-endpoint``.
 
-The profile is deliberately not the user's daily browser profile. Target work
-and platform work should each get their own directory.
+On Linux the launch picks Wayland when the session provides it, and falls back
+to X11. Use ``attach_to`` to drive a browser on another machine over an SSH
+tunnel, a cloud browser, or a Chrome the user started themselves.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import asyncio
 import os
 import signal
 import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -50,15 +52,19 @@ class HandoffError(RuntimeError):
 
 @dataclass
 class HandoffState:
-    process: asyncio.subprocess.Process
+    process: asyncio.subprocess.Process | None
     port: int
     profile_dir: str
     url: str | None = None
     proxy_note: str | None = None
+    attached: bool = False
+    cdp_override: str | None = None
+    display: str | None = None
+    ozone: str | None = None
 
     @property
     def cdp_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        return self.cdp_override or f"http://127.0.0.1:{self.port}"
 
 
 def _free_port() -> int:
@@ -67,20 +73,75 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_cdp(port: int, timeout_s: float) -> bool:
+def _wait_for_cdp_url(url: str, timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
-    url = f"http://127.0.0.1:{port}/json/version"
+    target = url.rstrip("/") + "/json/version"
     # A CDP probe must not inherit http_proxy from the environment.
     opener = build_opener(ProxyHandler({}))
     while time.monotonic() < deadline:
         try:
-            with opener.open(url, timeout=1) as response:
+            with opener.open(target, timeout=1) as response:
                 if response.status == 200:
                     return True
         except Exception:
             pass
         time.sleep(0.2)
     return False
+
+
+def _wait_for_cdp(port: int, timeout_s: float) -> bool:
+    return _wait_for_cdp_url(f"http://127.0.0.1:{port}", timeout_s)
+
+
+def _display_mode() -> str | None:
+    """Return the available display kind on Linux, or None when headless.
+
+    macOS and Windows always have a window server when a desktop session is
+    active, so they return "native" and skip the environment check.
+    """
+    if not sys.platform.startswith("linux"):
+        return "native"
+    has_x11 = bool(os.environ.get("DISPLAY"))
+    has_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+    if has_x11 and has_wayland:
+        return "both"
+    if has_wayland:
+        return "wayland"
+    if has_x11:
+        return "x11"
+    return None
+
+
+def _ozone_args(preference: str | None, mode: str | None) -> list[str]:
+    """Translate a display preference into Chrome ozone flags."""
+    choice = (preference or "auto").strip().lower()
+    if choice == "x11":
+        return ["--ozone-platform=x11"]
+    if choice == "wayland":
+        return ["--ozone-platform=wayland"]
+    if mode == "wayland":
+        # Chrome still defaults to X11 in some builds even with no DISPLAY, so
+        # be explicit when only Wayland is available.
+        return ["--ozone-platform=wayland"]
+    if mode in {"both", "x11"}:
+        return ["--ozone-platform-hint=auto"]
+    return []
+
+
+def _normalize_cdp(cdp_url: str) -> str:
+    url = (cdp_url or "").strip()
+    if not url:
+        raise HandoffError("attach_to needs a CDP URL or host:port")
+    if "://" not in url:
+        url = "http://" + url
+    return url.rstrip("/")
+
+
+def _port_from_url(url: str) -> int:
+    try:
+        return int(urlsplit(url).port or 0)
+    except Exception:
+        return 0
 
 
 def _proxy_arg(proxy: str | None) -> tuple[str | None, str | None]:
@@ -103,7 +164,7 @@ def _proxy_arg(proxy: str | None) -> tuple[str | None, str | None]:
 
 
 class HandoffManager:
-    """Owns at most one headed browser process."""
+    """Owns at most one headed browser process or CDP attachment."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -113,7 +174,14 @@ class HandoffManager:
 
     @property
     def running(self) -> bool:
-        return self.state is not None and self.state.process.returncode is None
+        if self.state is None:
+            return False
+        if self.state.attached:
+            return True
+        return (
+            self.state.process is not None
+            and self.state.process.returncode is None
+        )
 
     async def start(
         self,
@@ -123,6 +191,7 @@ class HandoffManager:
         profile_dir: str | None = None,
         proxy: str | None = None,
         timeout_s: float = 20.0,
+        ozone: str | None = None,
     ) -> dict[str, Any]:
         if self.running:
             await self.stop()
@@ -134,10 +203,11 @@ class HandoffManager:
                 "PLAGUE_CHROME_EXECUTABLE"
             )
 
-        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        mode = _display_mode()
+        if mode is None:
             raise HandoffError(
-                "no graphical display available; run the server under Xvfb or "
-                "use a desktop session"
+                "no graphical display available; pass attach_to to drive an "
+                "already-running Chrome, or run the server under Xvfb"
             )
 
         chosen_port = port or self.config.handoff_port or _free_port()
@@ -147,6 +217,9 @@ class HandoffManager:
         Path(chosen_profile).mkdir(parents=True, exist_ok=True)
 
         proxy_flag, proxy_note = _proxy_arg(proxy or self.config.proxy)
+        ozone_flags = _ozone_args(
+            ozone or self.config.handoff_ozone, mode
+        )
         args = [
             chrome,
             f"--remote-debugging-port={chosen_port}",
@@ -154,6 +227,7 @@ class HandoffManager:
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
+            *ozone_flags,
         ]
         if proxy_flag:
             args.append(proxy_flag)
@@ -174,42 +248,80 @@ class HandoffManager:
                 f"port {chosen_port}; it may have exited immediately"
             )
 
+        self.observer.clear()
+        self.active_page = 0
         self.state = HandoffState(
             process=process,
             port=chosen_port,
             profile_dir=chosen_profile,
             url=url,
             proxy_note=proxy_note,
+            display=mode,
+            ozone=" ".join(ozone_flags) or None,
+        )
+        return self.describe()
+
+    async def attach(
+        self, cdp_url: str, *, timeout_s: float = 10.0
+    ) -> dict[str, Any]:
+        """Attach to an existing Chrome instead of launching one."""
+        if self.running:
+            await self.stop()
+        target = _normalize_cdp(cdp_url)
+        if target.startswith("http"):
+            ok = await asyncio.to_thread(
+                _wait_for_cdp_url, target, timeout_s
+            )
+            if not ok:
+                raise HandoffError(
+                    f"no CDP endpoint answered at {target}/json/version"
+                )
+        self.observer.clear()
+        self.active_page = 0
+        self.state = HandoffState(
+            process=None,
+            port=_port_from_url(target),
+            profile_dir="",
+            attached=True,
+            cdp_override=target,
         )
         return self.describe()
 
     def describe(self) -> dict[str, Any]:
         if not self.state:
             return {"running": False}
-        return {
+        data: dict[str, Any] = {
             "running": self.running,
+            "attached": self.state.attached,
             "cdp_url": self.state.cdp_url,
             "port": self.state.port,
-            "pid": self.state.process.pid,
-            "profile_dir": self.state.profile_dir,
             "url": self.state.url,
+            "display": self.state.display,
+            "ozone": self.state.ozone,
             "proxy_note": self.state.proxy_note,
             "attach_hint": (
                 "Playwright MCP: --cdp-endpoint=" + self.state.cdp_url
             ),
         }
+        if self.state.process is not None:
+            data["pid"] = self.state.process.pid
+            data["profile_dir"] = self.state.profile_dir
+        return data
 
     async def stop(self) -> bool:
         state = self.state
         self.state = None
         if not state:
             return False
-        await self._kill(state.process)
+        if state.attached:
+            return True
+        if state.process is not None:
+            await self._kill(state.process)
         return True
 
     @staticmethod
-    async def _kill(process: asyncio.subprocess.Process) -> None:
-        if process.returncode is not None:
+    async def _kill(process: asyncio.subprocess.Process | None) -> None:
+        if process is None or process.returncode is not None:
             return
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)

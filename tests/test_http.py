@@ -5,6 +5,8 @@ import http.server
 import json
 import threading
 
+import pytest
+
 import plague.mcp_server as server
 from plague.http import request
 
@@ -45,6 +47,18 @@ def _start():
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, f"http://127.0.0.1:{httpd.server_address[1]}/"
+
+
+def test_http_rejects_body_and_json_together():
+    with pytest.raises(ValueError):
+        asyncio.run(
+            request(
+                "POST",
+                "http://127.0.0.1:1/",
+                body="raw",
+                json_body={"a": 1},
+            )
+        )
 
 
 def test_http_request_posts_json_and_sets_chrome_user_agent():

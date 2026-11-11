@@ -17,6 +17,7 @@ harness attached to its CDP endpoint.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -38,9 +39,16 @@ from mcp.server.fastmcp import FastMCP
 
 from . import Config, Plague, PlagueError, Tier
 from .challenge import detect as detect_challenge
+from .config import project_cache_dir
 from .engines import Session
 from .fingerprint import collect as collect_fingerprint
-from .handoff import HandoffError, HandoffManager
+from .handoff import HandoffError, HandoffManager, _display_mode
+from .harexport import (
+    build_har as build_har_export,
+    curl_commands,
+    write_export,
+)
+from .http import HAS_CURL_CFFI
 from .http import request as http_request
 from .interact import ActionError, parse_actions, run_actions
 from .models import Attempt, Capability, Profile
@@ -87,9 +95,9 @@ Reading and acting:
 - `snapshot` lists interactive elements with short refs such as `e3`.
 - `act` runs click/fill/press/select/check/scroll/back/goto actions on the warm
   session or on the headed handoff browser. Prefer refs over CSS selectors.
-- `handoff` launches a headed Chrome with a dedicated profile and returns a CDP
-  URL. Use it for logins, 2FA, payments, and risk-score walls that a human must
-  clear. `release` closes it.
+- `handoff` launches a headed Chrome, or attaches to an existing CDP endpoint,
+  and returns a CDP URL. Use it for logins, 2FA, payments, and risk-score walls
+  that a human must clear. `release` closes or detaches.
 - `recipe_save` stores a working action list and `recipe_run` replays it, so a
   repeated flow does not need regenerated scripts.
 
@@ -102,8 +110,9 @@ Policy:
 
 Recon and sessions:
 - `network` and `console` read the request log and page logs of the warm page.
-- `api_request` replays a raw HTTP request with the warm session cookies. It is
-  for APIs, not protected pages: it has no browser fingerprint.
+- `network_export` writes the observed requests as HAR or curl commands.
+- `api_request` replays a raw HTTP request with the warm session cookies. It
+  uses browser impersonation by default, so it carries a Chrome TLS fingerprint.
 - `screenshot` needs a rendering tier: stealth, chrome, or handoff.
 - `tabs`, `tab_open`, `tab_switch`, and `tab_close` manage pages on Chrome or
   Cloak. Lightpanda cannot open extra tabs.
@@ -367,6 +376,9 @@ async def doctor() -> dict[str, Any]:
         ),
         "idle_s": plague.config.mcp_idle_s,
         "keep_stealth_warm": plague.config.mcp_keep_stealth,
+        "http_client": "curl_cffi" if HAS_CURL_CFFI else "httpx",
+        "display": _display_mode(),
+        "handoff_ozone": plague.config.handoff_ozone,
         "patched_lightpanda": str(PATCHED_BINARY)
         if PATCHED_BINARY.is_file()
         else None,
@@ -753,6 +765,7 @@ async def network(
     filter: str | None = None,
     limit: int = 100,
     include_body: bool = False,
+    include_headers: bool = False,
     max_body_chars: int = 2_000,
     clear: bool = False,
 ) -> dict[str, Any]:
@@ -770,6 +783,7 @@ async def network(
             filter=filter,
             limit=limit,
             include_body=include_body,
+            include_headers=include_headers,
             max_body_chars=max_body_chars,
         )
         if clear:
@@ -792,6 +806,78 @@ async def network(
         "engine": entry.session.info.name,
         "count": len(entries),
     }
+
+
+def _observer_for(tier: str):
+    if tier == "handoff":
+        manager = RUNTIME.handoff_manager()
+        return manager.observer if manager.running else None
+    entry = RUNTIME._sessions.get(RUNTIME.tier_key(tier))
+    return entry.observer if entry else None
+
+
+@mcp.tool()
+async def network_export(
+    format: str = "har",
+    path: str | None = None,
+    filter: str | None = None,
+    include_bodies: bool = True,
+    limit: int = 200,
+    tier: str = "auto",
+) -> dict[str, Any]:
+    """Export the request log as HAR or as curl commands.
+
+    HAR is the evidence format for reports and DevTools. curl is the fast path
+    for replaying a request by hand. Both contain live cookies and headers, so
+    exports are written owner-only and should stay private.
+    """
+    observer = _observer_for(tier)
+    if observer is None:
+        return {"ok": False, "error": "no warm session or handoff browser"}
+    fmt = format.strip().lower()
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    export_dir = project_cache_dir() / "exports"
+    warning = "export contains live cookies and headers; keep it private"
+
+    if fmt == "har":
+        data = await build_har_export(
+            observer,
+            filter=filter,
+            limit=limit,
+            include_bodies=include_bodies,
+        )
+        text = json.dumps(data, indent=2) + "\n"
+        target = (
+            Path(path).expanduser()
+            if path
+            else export_dir / f"har-{stamp}.json"
+        )
+        write_export(target, text)
+        return {
+            "ok": True,
+            "format": "har",
+            "path": str(target),
+            "entries": len(data["log"]["entries"]),
+            "warning": warning,
+        }
+
+    if fmt == "curl":
+        commands = curl_commands(observer, filter=filter, limit=limit)
+        target = None
+        if path:
+            target = write_export(
+                path, "\n\n".join(commands) + "\n"
+            )
+        return {
+            "ok": True,
+            "format": "curl",
+            "commands": commands,
+            "count": len(commands),
+            "path": str(target) if target else None,
+            "warning": warning,
+        }
+
+    return _error("format must be 'har' or 'curl'")
 
 
 @mcp.tool()
@@ -878,12 +964,15 @@ async def api_request(
     use_cookies: bool = True,
     follow_redirects: bool = False,
     timeout_ms: int = 30_000,
+    impersonate: str | None = "chrome",
 ) -> dict[str, Any]:
     """Send a raw HTTP request, reusing cookies from the warm browser session.
 
     This is for authenticated API testing after the browser has established the
-    session. It does not use the browser TLS or HTTP/2 fingerprint, so a WAF may
-    reject it. Use `fetch` for protected pages.
+    session. By default it uses curl_cffi with a Chrome TLS and HTTP/2
+    fingerprint, so it survives more WAF checks than a plain Python client. Set
+    impersonate="none" to force the plain httpx path. It does not use the
+    browser's exact build, so a strict target can still tell the difference.
     """
     try:
         RUNTIME.check_url(url)
@@ -906,6 +995,7 @@ async def api_request(
             json_body=json_body,
             timeout_ms=timeout_ms,
             follow_redirects=follow_redirects,
+            impersonate=impersonate,
         )
     except Exception as exc:
         return _error(f"{type(exc).__name__}: {exc}")
@@ -1224,13 +1314,21 @@ async def handoff(
     proxy: str | None = None,
     seed: bool = True,
     timeout_s: float = 20.0,
+    attach_to: str | None = None,
+    ozone: str | None = None,
 ) -> dict[str, Any]:
-    """Launch a headed Chrome with a dedicated profile and return its CDP URL.
+    """Launch a headed Chrome, or attach to one, and return its CDP URL.
 
-    Use this for logins, 2FA, payments, and risk-score walls. The browser is not
-    the daily profile. When `seed` is true, cookies from the current warm session
-    are copied in before the page opens, so an already-cleared session carries
-    over. `release` closes it.
+    Use this for logins, 2FA, payments, and risk-score walls. The launched
+    browser is not the daily profile. When `seed` is true, cookies from the
+    current warm session are copied in before the page opens, so an
+    already-cleared session carries over. `release` closes a launched browser
+    and detaches from an attached one.
+
+    Set `attach_to` to a CDP URL or host:port to drive a Chrome you started
+    yourself, a browser on another machine over an SSH tunnel, or a cloud
+    browser. On Linux the launch picks Wayland when available; `ozone` can force
+    "wayland" or "x11".
     """
     await RUNTIME.sweep()
     if url:
@@ -1253,29 +1351,40 @@ async def handoff(
 
     manager = RUNTIME.handoff_manager()
     try:
-        data = await manager.start(
-            url=None if seed else url,
-            port=port or None,
-            profile_dir=profile_dir,
-            proxy=proxy,
-            timeout_s=timeout_s,
-        )
+        if attach_to:
+            data = await manager.attach(attach_to, timeout_s=timeout_s)
+        else:
+            data = await manager.start(
+                url=None if seed else url,
+                port=port or None,
+                profile_dir=profile_dir,
+                proxy=proxy,
+                timeout_s=timeout_s,
+                ozone=ozone,
+            )
     except HandoffError as exc:
         return _error(str(exc))
 
-    if seed and (cookies or url):
+    if attach_to:
+        if cookies or url:
+            try:
+                data.update(await manager.seed(cookies, url))
+            except Exception as exc:
+                data["seed_error"] = f"{type(exc).__name__}: {exc}"
+    elif seed and (cookies or url):
         try:
-            seeded = await manager.seed(cookies, url)
+            data.update(await manager.seed(cookies, url))
         except Exception as exc:
             data["seed_error"] = f"{type(exc).__name__}: {exc}"
-        else:
-            data.update(seeded)
     return data
 
 
 @mcp.tool()
 async def release(all_sessions: bool = False) -> dict[str, Any]:
-    """Close the headed handoff browser and optionally the warm sessions."""
+    """Close a launched handoff browser, or detach from an attached one.
+
+    Set all_sessions=true to also close the warm sessions and clear host pins.
+    """
     stopped = False
     if RUNTIME.handoff is not None:
         try:

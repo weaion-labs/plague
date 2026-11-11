@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pillow>=10", "build>=1.2"]
+impersonate = ["curl-cffi>=0.7"]
 
 [project.scripts]
 plague = "plague.cli:main"

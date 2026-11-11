@@ -129,6 +129,7 @@ def test_mcp_server_lists_tools_and_reports_doctor():
         "fingerprint",
         "handoff",
         "network",
+        "network_export",
         "recipe_delete",
         "recipe_list",
         "recipe_run",
@@ -265,6 +266,14 @@ def test_mcp_chrome_observation_tabs_screenshot_and_storage():
                         "include_body": True,
                     },
                 )
+                har = await session.call_tool(
+                    "network_export",
+                    {"tier": "chrome", "format": "har", "filter": "api"},
+                )
+                curls = await session.call_tool(
+                    "network_export",
+                    {"tier": "chrome", "format": "curl", "filter": "api"},
+                )
                 logs = await session.call_tool(
                     "console", {"tier": "chrome", "filter": "obs"}
                 )
@@ -297,6 +306,8 @@ def test_mcp_chrome_observation_tabs_screenshot_and_storage():
                 await session.call_tool("release", {"all_sessions": True})
                 return {
                     "network": json.loads(network.content[0].text),
+                    "har": json.loads(har.content[0].text),
+                    "curls": json.loads(curls.content[0].text),
                     "logs": json.loads(logs.content[0].text),
                     "shot": json.loads(shot.content[0].text),
                     "pages": json.loads(pages.content[0].text),
@@ -325,6 +336,10 @@ def test_mcp_chrome_observation_tabs_screenshot_and_storage():
     assert any(
         "ok" in row.get("body", "") for row in out["network"]["entries"]
     )
+    assert out["har"]["ok"] is True
+    assert out["har"]["entries"] >= 1
+    assert out["curls"]["ok"] is True
+    assert out["curls"]["count"] >= 1
     assert any("obs-log" in row["text"] for row in out["logs"]["entries"])
     assert out["shot"]["ok"] is True
     assert out["shot"]["path"].endswith(".png")
