@@ -242,6 +242,7 @@ class _Runtime:
                 entry = _Warm(session=session, last_used=now)
                 self._sessions[key] = entry
             entry.observer.attach(entry.session.page)
+            entry.observer.attach_context(entry.session.context)
             entry.in_use = True
             entry.last_used = now
             self.last_tier = key
@@ -949,6 +950,15 @@ async def _session_cookies(url: str) -> list[dict[str, Any]]:
             rows = await entry.session.cookies([url])
         except Exception:
             continue
+        if rows:
+            return list(rows)
+    manager = RUNTIME.handoff
+    if manager is not None and manager.running:
+        try:
+            async with manager.session() as session:
+                rows = await session.cookies([url])
+        except Exception:
+            rows = []
         if rows:
             return list(rows)
     return []

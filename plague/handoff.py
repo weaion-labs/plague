@@ -365,6 +365,7 @@ class HandoffManager:
                 self.active_page = 0
             for open_page in context.pages:
                 self.observer.attach(open_page)
+            self.observer.attach_context(context)
             yield Session(
                 page=page,
                 context=context,

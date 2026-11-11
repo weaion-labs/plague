@@ -353,10 +353,11 @@ console filter=error
 return an empty list with a note.
 
 `api_request` replays a request with the cookies from the active warm session.
-It is the fast path for testing an endpoint you just observed. By default it
-uses `curl_cffi` with Chrome impersonation, so it carries a real Chrome TLS and
-HTTP/2 fingerprint instead of a Python one. Set `impersonate="none"` to force
-plain `httpx`, or install the extra with
+If no warm session has cookies, it uses the handoff browser, which is what you
+want right after a human login. It is the fast path for testing an endpoint you
+just observed. By default it uses `curl_cffi` with Chrome impersonation, so it
+carries a real Chrome TLS and HTTP/2 fingerprint instead of a Python one. Set
+`impersonate="none"` to force plain `httpx`, or install the extra with
 `pip install -e ".[impersonate]"` if it is missing.
 
 `network_export` writes the observed log as HAR, which DevTools and report

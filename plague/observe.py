@@ -25,6 +25,7 @@ class Observer:
         self.errors: Deque[dict[str, Any]] = deque(maxlen=100)
         self._pending: dict[int, dict[str, Any]] = {}
         self._pages: set[int] = set()
+        self._contexts: set[int] = set()
 
     def attach(self, page: Any) -> None:
         key = id(page)
@@ -39,6 +40,17 @@ class Observer:
             page.on("pageerror", self._on_error)
         except Exception:
             self._pages.discard(key)
+
+    def attach_context(self, context: Any) -> None:
+        """Observe pages opened later by the same context, such as popups."""
+        key = id(context)
+        if key in self._contexts:
+            return
+        self._contexts.add(key)
+        try:
+            context.on("page", self.attach)
+        except Exception:
+            self._contexts.discard(key)
 
     # ----------------------------------------------------------- event hooks
 

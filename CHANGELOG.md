@@ -35,9 +35,12 @@
 - Added `set_files` as an action type for file uploads.
 - Added `network_export` for HAR and curl export, and header capture in
   `network include_headers=true`.
+- Popups and new tabs opened by the page are observed automatically through the
+  browser context.
 - Added `api_request` for authenticated API testing with the warm session
-  cookies. It uses `curl_cffi` Chrome impersonation by default, with plain
-  `httpx` as the fallback.
+  cookies, including cookies from an attached or launched handoff browser. It
+  uses `curl_cffi` Chrome impersonation by default, with plain `httpx` as the
+  fallback.
 - Added warm-session, handoff, and policy telemetry to `doctor`.
 - Refactored challenge handling into one resolver used by both cold and warm
   fetches, so warm pages get JS interstitial waits and token solving too.
