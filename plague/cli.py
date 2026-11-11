@@ -163,11 +163,25 @@ def doctor(do_install: bool, as_json: bool) -> None:
             "chrome_executable": config.chrome_executable,
             "cache": str(project_cache_dir()),
         }
+        policy = {
+            "allowed_domains": config.allowed_domains,
+            "solve_domains": config.solve_domains,
+        }
     finally:
         asyncio.run(plague.close())
 
     if as_json:
-        click.echo(json.dumps({"engines": rows, "solver": solver, "paths": paths}, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "engines": rows,
+                    "solver": solver,
+                    "paths": paths,
+                    "policy": policy,
+                },
+                indent=2,
+            )
+        )
         return
 
     table = Table(title="engines")
@@ -192,6 +206,17 @@ def doctor(do_install: bool, as_json: bool) -> None:
     console.print(f"  2captcha key:  {'set' if solver['twocaptcha_key'] else 'missing'}")
     if solver["error"]:
         console.print(f"  [yellow]error:[/yellow] {solver['error']}")
+
+    console.print()
+    console.print("[bold]policy[/bold]")
+    console.print(
+        "  allowed domains: "
+        + (", ".join(policy["allowed_domains"]) or "any")
+    )
+    console.print(
+        "  solve domains:   "
+        + (", ".join(policy["solve_domains"]) or "any")
+    )
 
     console.print()
     console.print("[bold]paths[/bold]")

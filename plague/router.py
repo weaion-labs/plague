@@ -28,6 +28,7 @@ from .challenge.capture import install as install_capture
 from .challenge.live import extract_hints
 from .config import Config
 from .engines import BaseEngine, EngineUnavailable, Session, default_engines
+from .interact import run_actions as run_action_list
 from .models import (
     Action,
     Attempt,
@@ -115,6 +116,7 @@ class Plague:
         geoip: bool | None = None,
     ) -> Result:
         tier = Tier(tier)
+        self._guard(url)
         if profile is None:
             overrides: dict[str, Any] = {}
             if headed is not None:
@@ -175,106 +177,24 @@ class Plague:
                     headers=nav.headers,
                     html=html,
                 )
-                solved = False
-                solver_name: str | None = None
-                cost = 0.0
-                solver_failure: str | None = None
-
-                # Cloudflare-style JS interstitials often clear themselves once a
-                # real browser runs the challenge script. Give them a moment.
-                if (
-                    challenge
-                    and challenge.blocking
-                    and challenge.kind is ChallengeKind.JS
-                    and session.supports(Capability.VISUAL)
-                ):
-                    for _ in range(self.config.js_challenge_rounds):
-                        await session.wait_for_timeout(
-                            self.config.js_challenge_wait_ms
-                        )
-                        if challenge.vendor in {
-                            "cloudflare",
-                            "cloudflare_turnstile",
-                        }:
-                            await click_turnstile(session.page)
-                            await session.wait_for_timeout(1000)
-                        # Reload so a clearance cookie is applied and the status
-                        # is no longer the challenge response's 403 or 503.
-                        nav = await session.goto(
-                            url, wait_until=wait_until, timeout_ms=timeout
-                        )
-                        html = await session.content()
-                        challenge = detect(
-                            status=nav.status,
-                            url=nav.url,
-                            headers=nav.headers,
-                            html=html,
-                        )
-                        if not challenge or not challenge.blocking:
-                            break
-
-                allow_solve = name != "lightpanda" or self.config.solve_on_fast
-                wants_solve = challenge and (
-                    challenge.blocking or self.config.solve_present
+                (
+                    nav,
+                    html,
+                    challenge,
+                    solved,
+                    solver_name,
+                    cost,
+                    solver_failure,
+                ) = await self._resolve_wall(
+                    session,
+                    name,
+                    url,
+                    nav,
+                    html,
+                    challenge=challenge,
+                    wait_until=wait_until,
+                    timeout_ms=timeout,
                 )
-                if (
-                    wants_solve
-                    and challenge.kind is ChallengeKind.TOKEN
-                    and self.solver is not None
-                    and allow_solve
-                ):
-                    hints = await extract_hints(session.page, challenge.vendor)
-                    sitekey = (
-                        challenge.sitekey
-                        or find_sitekey(html, challenge.vendor)
-                        or hints.get("sitekey")
-                    )
-                    if sitekey:
-                        task = SolveTask(
-                            vendor=challenge.vendor,
-                            page_url=nav.url,
-                            sitekey=sitekey,
-                            page=session.page,
-                            html=html,
-                            action=hints.get("action"),
-                            cdata=hints.get("cdata"),
-                        )
-                        try:
-                            solution = await self.solver.solve(task)
-                        except SolverError as exc:
-                            solver_failure = str(exc)
-                            log.warning("solver failed on %s: %s", name, exc)
-                        else:
-                            solver_name = solution.provider
-                            cost = solution.cost_usd
-                            await inject_token(
-                                session.page, challenge.vendor, solution.token
-                            )
-                            if challenge.blocking:
-                                await session.wait_for_timeout(1500)
-                                # Reload after injecting so clearance cookies and
-                                # the real response replace the challenge document.
-                                nav = await session.goto(
-                                    url, wait_until=wait_until, timeout_ms=timeout
-                                )
-                                html = await session.content()
-                            else:
-                                # A widget on an accessible form: keep the page
-                                # and its form state, do not reload.
-                                await session.wait_for_timeout(1000)
-                                html = await session.content()
-                                nav = self._nav(session, nav)
-                            updated = detect(
-                                status=nav.status,
-                                url=nav.url,
-                                headers=nav.headers,
-                                html=html,
-                            )
-                            if updated is None or not updated.blocking:
-                                solved = True
-                            challenge = updated
-                    else:
-                        solver_failure = "no sitekey found"
 
                 if challenge and challenge.blocking:
                     attempts.append(
@@ -411,6 +331,244 @@ class Plague:
             f"all engines failed for {url}", attempts
         )
 
+    async def open_session(
+        self,
+        tier: Tier | str = Tier.AUTO,
+        profile: Profile | None = None,
+    ) -> Session:
+        """Open one long-lived session without a context manager.
+
+        The caller owns the session and must close it. This is what lets a
+        long-running MCP server keep one warm browser across tool calls. The
+        first usable engine in the tier chain wins; fallbacks are silent.
+        """
+        chain, _ = self._chain(Tier(tier), need_visual=False)
+        if not chain:
+            raise PlagueError(f"no engine available for tier={tier!r}")
+        session_profile = profile or self.config.profile()
+        last_error: Exception | None = None
+        for name in chain:
+            engine = self.engines[name]
+            try:
+                session = await engine.open(session_profile)
+            except EngineUnavailable as exc:
+                last_error = exc
+                continue
+            await install_capture(session)
+            return session
+        raise PlagueError(
+            f"no engine available for tier={tier!r}: {last_error}"
+        )
+
+    async def fetch_on(
+        self,
+        session: Session,
+        url: str,
+        *,
+        wait_until: str = "domcontentloaded",
+        timeout_ms: int | None = None,
+        actions: Iterable[Action] | None = None,
+        screenshot: str | None = None,
+        allow_solve: bool | None = None,
+    ) -> Result:
+        """Fetch and extract on an already-open session, leaving it open.
+
+        Challenge handling matches ``fetch``: JS interstitials are waited out
+        and token walls are solved when the engine and policy allow it. A
+        blocking wall that survives is returned in the result rather than
+        raised, so the caller can decide to escalate or hand off.
+        """
+        self._guard(url)
+        timeout = timeout_ms or self.config.timeout_ms
+        started = time.monotonic()
+        name = session.info.name
+
+        nav = await session.goto(url, wait_until=wait_until, timeout_ms=timeout)
+        html = await session.content()
+        challenge = detect(
+            status=nav.status,
+            url=nav.url,
+            headers=nav.headers,
+            html=html,
+        )
+        (
+            nav,
+            html,
+            challenge,
+            solved,
+            solver_name,
+            cost,
+            solver_failure,
+        ) = await self._resolve_wall(
+            session,
+            name,
+            url,
+            nav,
+            html,
+            challenge=challenge,
+            wait_until=wait_until,
+            timeout_ms=timeout,
+            allow_solve=allow_solve,
+        )
+
+        if challenge and challenge.blocking:
+            return await self._stopped_result(
+                session,
+                url,
+                nav,
+                html,
+                name,
+                challenge,
+                started,
+                solved=solved,
+                solver_name=solver_name,
+                cost=cost,
+                error=solver_failure,
+            )
+
+        # A client-rendered shell can return 200 with no visible text. Wait for
+        # hydration, then report it so the caller can escalate.
+        if (
+            name == "lightpanda"
+            and APP_SHELL.search(html)
+            and len((await session.text()).strip()) < self.config.min_text_chars
+        ):
+            await session.wait_for_timeout(1500)
+            html = await session.content()
+            nav = self._nav(session, nav)
+            challenge = detect(
+                status=nav.status,
+                url=nav.url,
+                headers=nav.headers,
+                html=html,
+            )
+            if challenge and challenge.blocking:
+                return await self._stopped_result(
+                    session,
+                    url,
+                    nav,
+                    html,
+                    name,
+                    challenge,
+                    started,
+                    error="challenge appeared after hydration",
+                )
+            if len((await session.text()).strip()) < self.config.min_text_chars:
+                return await self._stopped_result(
+                    session,
+                    url,
+                    nav,
+                    html,
+                    name,
+                    None,
+                    started,
+                    error="client-rendered shell with no visible text; escalated",
+                )
+
+        if actions:
+            await self._run_actions(session, actions)
+            html = await session.content()
+            nav = self._nav(session, nav)
+            challenge = detect(
+                status=nav.status,
+                url=nav.url,
+                headers=nav.headers,
+                html=html,
+            )
+            if challenge and challenge.blocking:
+                return await self._stopped_result(
+                    session,
+                    url,
+                    nav,
+                    html,
+                    name,
+                    challenge,
+                    started,
+                    solved=solved,
+                    solver_name=solver_name,
+                    cost=cost,
+                )
+
+        title = await session.title() or html_to_title(html)
+        text = await session.text()
+        shot = None
+        if screenshot:
+            shot = await session.screenshot(screenshot)
+        try:
+            cookies = await session.cookies()
+        except Exception:
+            cookies = None
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return Result(
+            url=url,
+            final_url=nav.url,
+            status=nav.status,
+            title=title,
+            html=html,
+            text=text,
+            engine=name,
+            attempts=[
+                Attempt(
+                    engine=name,
+                    ok=True,
+                    elapsed_ms=elapsed_ms,
+                    status=nav.status,
+                    challenge=challenge.label if challenge else None,
+                    solved=solved,
+                    solver=solver_name,
+                    cost_usd=cost,
+                )
+            ],
+            challenge=challenge,
+            solved=solved,
+            elapsed_ms=elapsed_ms,
+            screenshot=shot,
+            cookies=cookies,
+        )
+
+    async def _stopped_result(
+        self,
+        session: Session,
+        url: str,
+        nav: Any,
+        html: str,
+        engine_name: str,
+        challenge: Challenge | None,
+        started: float,
+        *,
+        solved: bool = False,
+        solver_name: str | None = None,
+        cost: float = 0.0,
+        error: str | None = None,
+    ) -> Result:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return Result(
+            url=url,
+            final_url=nav.url,
+            status=nav.status,
+            title=await session.title() or html_to_title(html),
+            html=html,
+            text=await session.text(),
+            engine=engine_name,
+            attempts=[
+                Attempt(
+                    engine=engine_name,
+                    ok=False,
+                    elapsed_ms=elapsed_ms,
+                    status=nav.status,
+                    challenge=challenge.label if challenge else None,
+                    solved=solved,
+                    solver=solver_name,
+                    cost_usd=cost,
+                    error=error,
+                )
+            ],
+            challenge=challenge,
+            solved=solved,
+            elapsed_ms=elapsed_ms,
+        )
+
     async def fetch_many(
         self,
         urls: Iterable[str],
@@ -511,106 +669,65 @@ class Plague:
             return int((time.monotonic() - started) * 1000)
 
         try:
-            nav = await session.goto(
-                url, wait_until="domcontentloaded", timeout_ms=timeout_ms
-            )
-            html = await session.content()
-            challenge = detect(
-                status=nav.status,
-                url=nav.url,
-                headers=nav.headers,
-                html=html,
-            )
-
-            if challenge and challenge.blocking:
-                attempt = Attempt(
-                    engine=engine_name,
-                    ok=False,
-                    elapsed_ms=elapsed(),
-                    status=nav.status,
-                    challenge=challenge.label,
-                    error="challenge in warm mode",
-                )
-                if escalate:
-                    next_tier = {
-                        "lightpanda": Tier.STEALTH,
-                        "cloak": Tier.CHROME,
-                        "chrome": Tier.CHROME,
-                    }.get(engine_name, Tier.CHROME)
-                    try:
-                        cold = await self.fetch(
-                            url,
-                            tier=next_tier,
-                            timeout_ms=timeout_ms,
-                            screenshot=self._screenshot_path(
-                                screenshot_dir, url
-                            )
-                            if screenshot_dir
-                            else None,
-                        )
-                    except PlagueError as exc:
-                        result = self._error_result(url, exc, engine=engine_name)
-                        result.attempts = [attempt, *exc.attempts]
-                        if exc.attempts:
-                            result.engine = exc.attempts[-1].engine
-                            result.status = exc.attempts[-1].status
-                        result.elapsed_ms = elapsed()
-                        return result
-                    cold.attempts.insert(0, attempt)
-                    return cold
-
-                return Result(
-                    url=url,
-                    final_url=nav.url,
-                    status=nav.status,
-                    title=await session.title(),
-                    html=html,
-                    text=await session.text(),
-                    engine=engine_name,
-                    attempts=[attempt],
-                    challenge=challenge,
-                    solved=False,
-                    elapsed_ms=elapsed(),
-                )
-
-            title = await session.title()
-            text = await session.text()
-            shot = None
-            if screenshot_dir and session.supports(Capability.VISUAL):
-                shot = await session.screenshot(
+            result = await self.fetch_on(
+                session,
+                url,
+                timeout_ms=timeout_ms,
+                screenshot=(
                     self._screenshot_path(screenshot_dir, url)
-                )
-            try:
-                cookies = await session.cookies()
-            except Exception:
-                cookies = None
-
-            attempt = Attempt(
-                engine=engine_name,
-                ok=True,
-                elapsed_ms=elapsed(),
-                status=nav.status,
-                challenge=challenge.label if challenge else None,
-            )
-            return Result(
-                url=url,
-                final_url=nav.url,
-                status=nav.status,
-                title=title,
-                html=html,
-                text=text,
-                engine=engine_name,
-                attempts=[attempt],
-                challenge=challenge,
-                solved=False,
-                elapsed_ms=elapsed(),
-                screenshot=shot,
-                cookies=cookies,
+                    if screenshot_dir and session.supports(Capability.VISUAL)
+                    else None
+                ),
             )
         except Exception as exc:
             return self._error_result(
                 url, exc, engine=engine_name, elapsed_ms=elapsed()
             )
+
+        blocked = bool(result.challenge and result.challenge.blocking)
+        shell = any(
+            attempt.error and "shell" in attempt.error
+            for attempt in result.attempts
+        )
+        if escalate and (blocked or shell):
+            attempt = (
+                result.attempts[0]
+                if result.attempts
+                else Attempt(engine=engine_name, ok=False, elapsed_ms=elapsed())
+            )
+            if shell and not attempt.error:
+                attempt.error = (
+                    "client-rendered shell with no visible text; escalated"
+                )
+            next_tier = {
+                "lightpanda": Tier.STEALTH,
+                "cloak": Tier.CHROME,
+                "chrome": Tier.CHROME,
+            }.get(engine_name, Tier.CHROME)
+            try:
+                cold = await self.fetch(
+                    url,
+                    tier=next_tier,
+                    timeout_ms=timeout_ms,
+                    screenshot=self._screenshot_path(screenshot_dir, url)
+                    if screenshot_dir
+                    else None,
+                )
+            except PlagueError as exc:
+                error_result = self._error_result(
+                    url, exc, engine=engine_name
+                )
+                error_result.attempts = [attempt, *exc.attempts]
+                if exc.attempts:
+                    error_result.engine = exc.attempts[-1].engine
+                    error_result.status = exc.attempts[-1].status
+                error_result.elapsed_ms = elapsed()
+                return error_result
+            cold.attempts.insert(0, attempt)
+            return cold
+
+        result.elapsed_ms = elapsed()
+        return result
 
     @staticmethod
     def _screenshot_path(directory: str | None, url: str) -> str | None:
@@ -694,6 +811,7 @@ class Plague:
         profile: Profile | None = None,
     ) -> Probe:
         """One navigation on the first usable engine, no escalation, no solving."""
+        self._guard(url)
         chain, _ = self._chain(Tier(tier), need_visual=False)
         profile = profile or self.config.profile()
         timeout = timeout_ms or self.config.timeout_ms
@@ -736,6 +854,10 @@ class Plague:
 
     def describe_engines(self) -> list[dict[str, Any]]:
         return [engine.describe() for engine in self.engines.values()]
+
+    def check_url(self, url: str) -> None:
+        """Raise when a URL falls outside PLAGUE_ALLOWED_DOMAINS."""
+        self._guard(url)
 
     async def close(self) -> None:
         if self.solver is not None:
@@ -806,35 +928,166 @@ class Plague:
             headers=previous.headers,
         )
 
-    @staticmethod
-    async def _run_actions(session, actions: Iterable[Action]) -> None:
+    async def _run_actions(
+        self, session: Session, actions: Iterable[Action]
+    ) -> None:
         for action in actions:
-            kind = action.type.lower()
-            if kind == "click":
-                if not action.selector:
-                    raise ValueError("click action needs a selector")
-                await session.click(action.selector, action.timeout_ms)
-            elif kind == "fill":
-                if not action.selector:
-                    raise ValueError("fill action needs a selector")
-                await session.fill(
-                    action.selector, action.value or "", action.timeout_ms
+            if action.type.lower() == "goto" and action.value:
+                self._guard(action.value)
+        await run_action_list(session, actions)
+
+    async def _resolve_wall(
+        self,
+        session: Session,
+        engine_name: str,
+        url: str,
+        nav: Any,
+        html: str,
+        *,
+        challenge: Challenge | None,
+        wait_until: str,
+        timeout_ms: int,
+        allow_solve: bool | None = None,
+    ) -> tuple[Any, str, Challenge | None, bool, str | None, float, str | None]:
+        """Clear JS interstitials and token walls in place on a live session.
+
+        Returns ``(nav, html, challenge, solved, solver_name, cost, error)``.
+        A blocking challenge that survives is returned unchanged so the caller
+        can either escalate or report it.
+        """
+        solved = False
+        solver_name: str | None = None
+        cost = 0.0
+        solver_failure: str | None = None
+
+        # Cloudflare-style JS interstitials often clear themselves once a real
+        # browser runs the challenge script. Give them a moment.
+        if (
+            challenge
+            and challenge.blocking
+            and challenge.kind is ChallengeKind.JS
+            and session.supports(Capability.VISUAL)
+        ):
+            for _ in range(self.config.js_challenge_rounds):
+                await session.wait_for_timeout(self.config.js_challenge_wait_ms)
+                if challenge.vendor in {"cloudflare", "cloudflare_turnstile"}:
+                    await click_turnstile(session.page)
+                    await session.wait_for_timeout(1000)
+                # Reload so a clearance cookie is applied and the status is no
+                # longer the challenge response's 403 or 503.
+                nav = await session.goto(
+                    url, wait_until=wait_until, timeout_ms=timeout_ms
                 )
-            elif kind == "press":
-                if not action.selector:
-                    raise ValueError("press action needs a selector")
-                await session.press(
-                    action.selector, action.value or "Enter", action.timeout_ms
+                html = await session.content()
+                challenge = detect(
+                    status=nav.status,
+                    url=nav.url,
+                    headers=nav.headers,
+                    html=html,
                 )
-            elif kind == "wait_for":
-                if not action.selector:
-                    raise ValueError("wait_for action needs a selector")
-                await session.wait_for_selector(action.selector, action.timeout_ms)
-            elif kind == "wait":
-                await session.wait_for_timeout(int(action.value or 1000))
-            elif kind == "evaluate":
-                if not action.value:
-                    raise ValueError("evaluate action needs a value")
-                await session.evaluate(action.value)
+                if not challenge or not challenge.blocking:
+                    break
+
+        if allow_solve is None:
+            allow_solve = (
+                engine_name != "lightpanda" or self.config.solve_on_fast
+            )
+        wants_solve = challenge and (
+            challenge.blocking or self.config.solve_present
+        )
+        if (
+            wants_solve
+            and challenge.kind is ChallengeKind.TOKEN
+            and self.solver is not None
+            and allow_solve
+        ):
+            if not self._solve_allowed(nav.url):
+                solver_failure = "domain not in PLAGUE_SOLVE_DOMAINS"
+                log.info("solver skipped for %s: domain not allowed", nav.url)
             else:
-                raise ValueError(f"unknown action type: {action.type!r}")
+                hints = await extract_hints(session.page, challenge.vendor)
+                sitekey = (
+                    challenge.sitekey
+                    or find_sitekey(html, challenge.vendor)
+                    or hints.get("sitekey")
+                )
+                if sitekey:
+                    task = SolveTask(
+                        vendor=challenge.vendor,
+                        page_url=nav.url,
+                        sitekey=sitekey,
+                        page=session.page,
+                        html=html,
+                        action=hints.get("action"),
+                        cdata=hints.get("cdata"),
+                    )
+                    try:
+                        solution = await self.solver.solve(task)
+                    except SolverError as exc:
+                        solver_failure = str(exc)
+                        log.warning("solver failed on %s: %s", engine_name, exc)
+                    else:
+                        solver_name = solution.provider
+                        cost = solution.cost_usd
+                        log.info(
+                            "solved %s on %s with %s cost=%.4f",
+                            challenge.vendor,
+                            nav.url,
+                            solver_name,
+                            cost,
+                        )
+                        await inject_token(
+                            session.page, challenge.vendor, solution.token
+                        )
+                        if challenge.blocking:
+                            await session.wait_for_timeout(1500)
+                            # Reload after injecting so clearance cookies and the
+                            # real response replace the challenge document.
+                            nav = await session.goto(
+                                url, wait_until=wait_until, timeout_ms=timeout_ms
+                            )
+                            html = await session.content()
+                        else:
+                            # A widget on an accessible form: keep the page and
+                            # its form state, do not reload.
+                            await session.wait_for_timeout(1000)
+                            html = await session.content()
+                            nav = self._nav(session, nav)
+                        updated = detect(
+                            status=nav.status,
+                            url=nav.url,
+                            headers=nav.headers,
+                            html=html,
+                        )
+                        if updated is None or not updated.blocking:
+                            solved = True
+                        challenge = updated
+                else:
+                    solver_failure = "no sitekey found"
+
+        return nav, html, challenge, solved, solver_name, cost, solver_failure
+
+    def _guard(self, url: str) -> None:
+        """Enforce PLAGUE_ALLOWED_DOMAINS when it is set."""
+        domains = self.config.allowed_domains
+        if not domains:
+            return
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not self._domain_matches(host, domains):
+            raise PlagueError(
+                f"domain not allowed by PLAGUE_ALLOWED_DOMAINS: {host or url}"
+            )
+
+    def _solve_allowed(self, url: str) -> bool:
+        domains = self.config.solve_domains
+        if not domains:
+            return True
+        host = (urlparse(url).hostname or "").lower()
+        return bool(host) and self._domain_matches(host, domains)
+
+    @staticmethod
+    def _domain_matches(host: str, domains: Iterable[str]) -> bool:
+        return any(
+            host == domain or host.endswith("." + domain)
+            for domain in domains
+        )

@@ -121,9 +121,15 @@ class Profile:
 
 @dataclass
 class Action:
-    """A single interaction to run before extracting the page."""
+    """A single interaction to run before extracting the page.
+
+    Either ``selector`` (CSS) or ``ref`` (a snapshot ref such as ``e3``) may
+    address an element. Refs are resolved against the page's current snapshot
+    and survive class or layout churn better than hand-written selectors.
+    """
 
     type: str
     selector: str | None = None
     value: str | None = None
     timeout_ms: int | None = None
+    ref: str | None = None

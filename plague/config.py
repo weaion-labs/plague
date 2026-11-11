@@ -28,6 +28,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_list(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [
+        part.strip().lower()
+        for part in raw.replace(",", " ").split()
+        if part.strip()
+    ]
+
+
 def project_cache_dir() -> Path:
     """Prefer ./.plague when it already exists, else ~/.cache/plague.
 
@@ -125,6 +134,22 @@ class Config:
     max_escalations: int = 3
     evidence_limit: int = 500
 
+    # Policy. Empty lists mean "no restriction".
+    allowed_domains: list[str] = field(default_factory=list)
+    solve_domains: list[str] = field(default_factory=list)
+
+    # Long-lived MCP server
+    mcp_idle_s: int = 180
+    mcp_keep_stealth: bool = False
+    host_tier_ttl_s: int = 600
+    handoff_port: int = 0  # 0 picks a free port
+    handoff_profile_dir: str = field(
+        default_factory=lambda: str(project_cache_dir() / "handoff-profile")
+    )
+    screenshot_dir: str = field(
+        default_factory=lambda: str(project_cache_dir() / "screenshots")
+    )
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
@@ -155,6 +180,16 @@ class Config:
             js_challenge_rounds=_env_int("PLAGUE_JS_ROUNDS", 3),
             js_challenge_wait_ms=_env_int("PLAGUE_JS_WAIT_MS", 2500),
             min_text_chars=_env_int("PLAGUE_MIN_TEXT_CHARS", 40),
+            allowed_domains=_env_list("PLAGUE_ALLOWED_DOMAINS"),
+            solve_domains=_env_list("PLAGUE_SOLVE_DOMAINS"),
+            mcp_idle_s=_env_int("PLAGUE_MCP_IDLE_S", 180),
+            mcp_keep_stealth=_env_bool("PLAGUE_MCP_KEEP_STEALTH", False),
+            host_tier_ttl_s=_env_int("PLAGUE_HOST_TIER_TTL", 600),
+            handoff_port=_env_int("PLAGUE_HANDOFF_PORT", 0),
+            handoff_profile_dir=os.environ.get("PLAGUE_HANDOFF_PROFILE_DIR")
+            or str(project_cache_dir() / "handoff-profile"),
+            screenshot_dir=os.environ.get("PLAGUE_SCREENSHOT_DIR")
+            or str(project_cache_dir() / "screenshots"),
         )
 
     def profile(self, **overrides) -> Profile:

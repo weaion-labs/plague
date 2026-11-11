@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+- Added warm MCP sessions: one long-lived fast-tier browser is reused across
+  `fetch` calls, with an idle timeout and automatic cold retry when a session
+  dies.
+- Added ref-based interaction: `snapshot` returns compact `eN` refs and `act`
+  runs click, fill, press, hover, select, check, uncheck, wait, evaluate,
+  scroll, back, and goto against a ref or a CSS selector.
+- Added `fetch` actions so a read can fill a form or click a control before
+  extraction.
+- Added headed handoff: `handoff` launches a dedicated-profile Chrome with a
+  CDP endpoint, seeds cookies from the live session, and returns an attach hint.
+  `act tier="handoff"` drives it directly, or Playwright MCP can attach over CDP.
+  `release` closes it.
+- Added `PLAGUE_ALLOWED_DOMAINS` navigation allowlist and
+  `PLAGUE_SOLVE_DOMAINS` solver allowlist.
+- Added saved action recipes: `recipe_save`, `recipe_run`, `recipe_list`, and
+  `recipe_delete`, stored as JSON under `.plague/recipes/`.
+- Added bounded recon observation: `network` and `console` report requests,
+  responses, console messages, and uncaught page errors from the warm session.
+  `network include_body=true` returns text, JSON, XML, or JavaScript bodies.
+- Added `screenshot` for rendering tiers and `tabs`, `tab_open`, `tab_switch`,
+  and `tab_close` for Chrome and Cloak.
+- Added `storage_save`, `storage_load`, `storage_list`, and `storage_delete` for
+  reusing cookies and localStorage across runs. State files are owner-only.
+- Added per-host tier pinning: an explicit stealth or chrome fetch keeps `auto`
+  on that tier for `PLAGUE_HOST_TIER_TTL` seconds, so an authenticated flow does
+  not fall back to Lightpanda.
+- Interactive tools now default to the most recently used tier, so follow-up
+  `act`, `snapshot`, `network`, and `screenshot` calls stay on the same session.
+- Added `set_files` as an action type for file uploads.
+- Added `api_request` for authenticated API testing with the warm session
+  cookies. It uses `httpx`, not the browser fingerprint.
+- Added warm-session, handoff, and policy telemetry to `doctor`.
+- Refactored challenge handling into one resolver used by both cold and warm
+  fetches, so warm pages get JS interstitial waits and token solving too.
+- Added tests for action parsing, refs, snapshots, policy gates, warm sessions,
+  and the handoff helpers.
+
 ## 0.1.0 - 2026-11-06
 
 - Added the tiered router: Lightpanda fast tier, CloakBrowser stealth tier,

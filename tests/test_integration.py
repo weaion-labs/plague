@@ -137,3 +137,51 @@ def test_solver_clears_a_local_challenge(vendor: str):
     assert len(solver.calls) == 1
     assert solver.calls[0].vendor == vendor
     assert solver.calls[0].sitekey == "LOCAL_SITEKEY"
+
+
+@pytest.mark.integration
+def test_fetch_on_solves_and_reuses_the_open_session():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/?vendor=recaptcha"
+
+    config = Config(
+        solver="none",
+        headless=True,
+        humanize=False,
+        timeout_ms=20_000,
+        chrome_executable=find_chrome(),
+    )
+    config.js_challenge_rounds = 1
+    config.js_challenge_wait_ms = 100
+    solver = LocalSolver()
+    plague = Plague(
+        config, engines={"chrome": ChromeEngine(config)}, solver=solver
+    )
+
+    async def run():
+        session = await plague.open_session(Tier.CHROME)
+        try:
+            first = await plague.fetch_on(session, url)
+            second = await plague.fetch_on(session, url)
+            return first, second
+        finally:
+            await session.close()
+
+    try:
+        first, second = asyncio.run(run())
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"chromium unavailable: {exc}")
+    finally:
+        server.shutdown()
+        server.server_close()
+        asyncio.run(plague.close())
+
+    assert first.ok
+    assert first.solved is True
+    assert "Welcome" in first.text
+    assert second.ok
+    assert second.solved is False
+    assert "Welcome" in second.text
+    assert len(solver.calls) == 1

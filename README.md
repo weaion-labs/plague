@@ -44,6 +44,15 @@ suite, and a matching Chrome TLS cipher and HTTP/2 fingerprint. See
 
 - Runs a Lightpanda pass first. On ordinary content pages this is much cheaper
   and faster than Chromium.
+- Keeps one warm fast session across MCP tool calls, so a browsing loop pays a
+  navigation instead of a process start.
+- Lets an agent act on the page with snapshot refs instead of generating
+  Playwright scripts: click, fill, press, select, scroll, back.
+- Records requests, responses, console messages, and page errors for recon,
+  and replays authenticated API calls with the session cookies.
+- Saves and reloads storage states so a login survives a restart.
+- Hands off to a headed Chrome with a dedicated profile and a CDP endpoint when
+  a login, 2FA prompt, payment, or risk-score wall needs a human.
 - Detects when that pass hit a wall and retries the job on CloakBrowser with a
   real fingerprint, real layout, and humanized input.
 - Recognizes token-based challenges, asks a solver for a token, injects it into
@@ -261,12 +270,171 @@ Tools exposed to the agent:
 
 | Tool | What it does |
 |---|---|
-| `plague_doctor` | Engine availability, active solver, binary paths |
-| `plague_fetch` | Fetch a URL through the tier router |
+| `plague_doctor` | Engine availability, active solver, policy, warm sessions, handoff state |
+| `plague_fetch` | Fetch a URL through the tier router, with optional actions |
+| `plague_snapshot` | Interactive elements as compact refs such as `e3` |
+| `plague_act` | Click, fill, press, select, scroll, back, goto on refs or selectors |
+| `plague_network` | Request log with method, URL, resource type, and status |
+| `plague_console` | Console messages and uncaught page errors |
+| `plague_api_request` | Raw HTTP request with the warm session cookies |
+| `plague_screenshot` | Capture the current rendering page |
+| `plague_tabs` | List active pages |
+| `plague_tab_open` | Open a page and make it active |
+| `plague_tab_switch` | Switch the active page |
+| `plague_tab_close` | Close a page |
+| `plague_storage_save` | Save cookies and localStorage under a name |
+| `plague_storage_load` | Reopen a tier with a saved storage state |
+| `plague_storage_list` | List saved storage states |
+| `plague_storage_delete` | Delete a saved storage state |
+| `plague_handoff` | Launch a headed Chrome and return its CDP URL |
+| `plague_release` | Close the handoff browser and optionally the warm sessions |
+| `plague_recipe_save` | Save an action list as a reusable recipe |
+| `plague_recipe_run` | Replay a saved recipe, optionally after navigating |
+| `plague_recipe_list` | List saved recipes |
+| `plague_recipe_delete` | Delete a saved recipe |
 | `plague_detect` | Classify a challenge wall without solving |
 | `plague_fingerprint` | Compare navigator, screen, client hints, canvas |
 | `plague_bench` | Warm batch with workers and optional escalation |
 | `plague_captcha_demos` | Run the public demo walls and classify results |
+
+### Warm sessions
+
+The MCP server keeps one fast-tier session alive between tool calls and closes
+it after `PLAGUE_MCP_IDLE_S` seconds (default 180). The first `fetch` pays
+Lightpanda startup; later calls reuse the same process and the same cookies.
+
+```text
+fetch  https://example.com            # 640 ms cold
+fetch  https://example.com            # 110 ms warm
+snapshot                              # refs: e1 link "Learn more"
+act    [{"type": "click", "ref": "e1"}]
+```
+
+The loop is deliberately tool-shaped, not script-shaped. A tool call cannot have
+a syntax error, and a ref cannot silently point at a different element after a
+CSS class changes. Refs are only valid until the page navigates or the DOM
+changes, so take a fresh `snapshot` after a step that mutates the page.
+
+`tier=stealth` and `tier=chrome` also keep a warm session, one heavy session at
+a time. `tier=auto` uses the fast session and falls back to a cold Cloak fetch
+on a wall, which keeps memory and Cloak concurrency seats low. For an
+interactive flow on a protected page, call `fetch` with `tier="stealth"` first
+so the session stays warm for `act`. Set `PLAGUE_MCP_KEEP_STEALTH=1` if you want
+auto escalation to keep it warm too.
+
+After a successful `tier="stealth"` or `tier="chrome"` fetch, that host stays
+pinned to the heavy tier for `PLAGUE_HOST_TIER_TTL` seconds (default 600).
+`tier="auto"` then reuses the same session, so an authenticated flow keeps its
+cookies instead of dropping back to Lightpanda. `release(all_sessions=True)`
+clears the pins.
+
+Interactive tools (`act`, `snapshot`, `network`, `console`, `screenshot`,
+`tabs`, `storage_save`) default to `tier="auto"`, which means the most recently
+used tier. After a stealth fetch you do not have to repeat the tier on every
+follow-up call.
+
+### Recon: requests and logs
+
+The warm session records requests, responses, console messages, and uncaught
+errors. This is the part that matters on a bug bounty target: you see the XHR
+and API paths the page actually uses, not just the rendered text.
+
+```text
+network filter=api limit=50 include_body=true
+# [{method: GET, url: https://target/api/users, status: 200,
+#   body: "{\"users\":[...]}"}]
+console filter=error
+# [{source: page, type: error, text: "Uncaught TypeError: ..."}]
+```
+
+`network` and `console` do not open a browser. If no warm session exists they
+return an empty list with a note.
+
+`api_request` replays a request with the cookies from the active warm session.
+It is the fast path for testing an endpoint you just observed. It uses `httpx`,
+not the browser, so it has no Chrome TLS or HTTP/2 fingerprint and a WAF may
+reject it. Use it for authenticated APIs, not for protected HTML pages.
+
+```text
+network filter=api include_body=true
+api_request GET https://target/api/users use_cookies=true
+api_request PATCH https://target/api/users/7 json_body={"role":"admin"}
+```
+
+### Screenshots
+
+`screenshot` needs a rendering engine. The fast tier has no layout, so use
+`tier="stealth"`, `tier="chrome"`, or `tier="handoff"`. With no path it writes
+under `.plague/screenshots/`.
+
+### Tabs
+
+`tabs`, `tab_open`, `tab_switch`, and `tab_close` work on Chrome and Cloak.
+Lightpanda exposes one page and returns a clear error on `tab_open`, so use the
+fast tier for reading and a rendering tier for OAuth or popup flows.
+
+### Session storage
+
+`storage_save` exports cookies and localStorage from the current session.
+`storage_load` reopens a tier with that state, so a login done once survives a
+server restart. `storage_save tier="handoff"` exports the human-driven browser,
+which is how you keep a login that needed a manual step.
+
+```text
+storage_save name=program-x
+release
+storage_load name=program-x tier=stealth url=https://target/login
+```
+
+States are written owner-only under `.plague/sessions/`. They contain live
+cookies, so treat them like credentials.
+
+### Recipes
+
+An action list that works can be stored and replayed:
+
+```text
+recipe_save name=login actions=[{"type":"fill","ref":"e1","value":"me"},
+                                 {"type":"click","ref":"e2"}]
+recipe_run  name=login url=https://target.example/login
+```
+
+Recipes are JSON under `.plague/recipes/` (or `PLAGUE_HOME/recipes`). Replaying
+one is deterministic and cannot have a syntax error, which is the point.
+
+### Headed handoff
+
+```text
+handoff url=https://target.example/login
+# -> CDP URL on 127.0.0.1, dedicated profile, cookies seeded if available
+```
+
+The human completes the login or challenge in the headed window. The agent can
+then keep driving it with `act tier="handoff"`, or attach another harness to the
+returned endpoint:
+
+```bash
+npx @playwright/mcp@latest --cdp-endpoint=http://127.0.0.1:9222
+```
+
+`release` closes the browser. The profile is separate from the daily Chrome
+profile and from the platform profile. Keep target work and platform work in
+different directories.
+
+The handoff observer sees traffic only while a Plague tool is attached, so for a
+continuous capture of a human-driven session use the Chrome DevTools protocol
+from another client.
+
+### Policy
+
+Two environment variables turn the router into a scoped tool:
+
+- `PLAGUE_ALLOWED_DOMAINS` blocks every agent navigation outside the listed
+  domains, including subdomains. Applies to `fetch`, `detect`, `act`, `bench`,
+  and the initial URL of `handoff`. A headed human can still navigate onward,
+  so the handoff profile is the boundary there.
+- `PLAGUE_SOLVE_DOMAINS` restricts where the token solver may spend credits.
+  Without it, solving is limited only by key availability.
 
 The server prefers the patched Lightpanda binary at
 `.plague/lightpanda-src/zig-out/bin/lightpanda` when it exists. It also exposes
@@ -424,6 +592,14 @@ All settings can come from the environment.
 | `PLAGUE_MIN_TEXT_CHARS` | 40 | Empty app-shell escalation threshold |
 | `PLAGUE_SOLVE_ON_FAST` | false | Allow token solving on Lightpanda (usually pointless) |
 | `PLAGUE_SOLVE_PRESENT` | false | Solve token widgets even when the page is not blocked |
+| `PLAGUE_ALLOWED_DOMAINS` | none | Comma or space separated navigation allowlist |
+| `PLAGUE_SOLVE_DOMAINS` | none | Domains where the token solver may run |
+| `PLAGUE_MCP_IDLE_S` | 180 | Idle seconds before the MCP server closes a warm session |
+| `PLAGUE_MCP_KEEP_STEALTH` | false | Keep the auto-escalated Cloak session warm for follow-up `act` calls |
+| `PLAGUE_HOST_TIER_TTL` | 600 | Seconds a host stays pinned to stealth or chrome after an explicit fetch |
+| `PLAGUE_SCREENSHOT_DIR` | .plague/screenshots | Default output directory for `screenshot` |
+| `PLAGUE_HANDOFF_PORT` | 0 | Fixed CDP port for the headed handoff, or 0 for a free port |
+| `PLAGUE_HANDOFF_PROFILE_DIR` | .plague/handoff-profile | Profile directory for the headed handoff |
 | `PLAGUE_HOME` | ./.plague or ~/.cache/plague | Cache and log directory |
 
 ## How escalation works
@@ -456,6 +632,13 @@ will skip Lightpanda and go straight to Cloak.
 plague/
   router.py          tier selection, escalation, telemetry
   fingerprint.py     cross-engine navigator and canvas probe
+  interact.py        action parsing and execution
+  snapshot.py        ref-based interactive element snapshots
+  observe.py         bounded request, console, and error log
+  storage.py         named storage states for session reuse
+  http.py            raw HTTP with warm-session cookies
+  recipes.py         saved action lists for deterministic replay
+  handoff.py         headed Chrome over CDP, dedicated profile
   mcp_server.py      project-local stdio MCP server
   engines/
     lightpanda.py    process + CDP client
@@ -533,6 +716,10 @@ security issues privately as described in [SECURITY.md](SECURITY.md).
 - The patched Lightpanda build reports a Chrome UA, Win32 platform,
   `Google Inc.` vendor, 5 plugins, 2 MIME types, `window.chrome`, 8 hardware
   threads, and a 1920x1080 screen. Canvas, WebGL, and WebRTC are still absent.
+- The MCP server reuses one warm Lightpanda session across calls and returns
+  ref snapshots that `act` can drive, verified against a local page.
+- The headed handoff launches Chrome with a dedicated profile, exposes CDP,
+  and can be driven through `act tier="handoff"`.
 - The patched build matches Cloak on the JA4 cipher hash
   (`8daaf6152771`) and the full Akamai HTTP/2 fingerprint
   (`52d84b11737d980aef856699f885ca86`). Four TLS extensions still differ.

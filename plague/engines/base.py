@@ -136,10 +136,44 @@ class Session:
     ) -> None:
         await self.page.press(selector, key, timeout=timeout_ms)
 
+    async def hover(self, selector: str, timeout_ms: int | None = None) -> None:
+        await self.page.hover(selector, timeout=timeout_ms)
+
+    async def select_option(
+        self, selector: str, value: str, timeout_ms: int | None = None
+    ) -> None:
+        await self.page.select_option(selector, value, timeout=timeout_ms)
+
+    async def check(self, selector: str, timeout_ms: int | None = None) -> None:
+        await self.page.check(selector, timeout=timeout_ms)
+
+    async def uncheck(self, selector: str, timeout_ms: int | None = None) -> None:
+        await self.page.uncheck(selector, timeout=timeout_ms)
+
+    async def back(self) -> Nav:
+        response = await self.page.go_back()
+        status = response.status if response is not None else None
+        headers: dict[str, str] = {}
+        if response is not None:
+            try:
+                headers = {
+                    str(k).lower(): str(v)
+                    for k, v in (response.headers or {}).items()
+                }
+            except Exception:
+                headers = {}
+        return Nav(url=self.page.url, status=status, headers=headers)
+
     async def wait_for_selector(
         self, selector: str, timeout_ms: int | None = None
     ) -> None:
         await self.page.wait_for_selector(selector, timeout=timeout_ms)
+
+    async def exists(self, selector: str) -> bool:
+        try:
+            return await self.page.query_selector(selector) is not None
+        except Exception:
+            return False
 
     async def wait_for_timeout(self, ms: int) -> None:
         await self.page.wait_for_timeout(ms)
@@ -148,10 +182,55 @@ class Session:
         self._require(Capability.INIT_SCRIPT)
         await self.page.add_init_script(script)
 
-    async def screenshot(self, path: str) -> str:
+    async def screenshot(self, path: str, full_page: bool = True) -> str:
         self._require(Capability.VISUAL)
-        await self.page.screenshot(path=path, full_page=True)
+        await self.page.screenshot(path=path, full_page=full_page)
         return path
+
+    async def set_input_files(
+        self,
+        selector: str,
+        files: str | list[str],
+        timeout_ms: int | None = None,
+    ) -> None:
+        await self.page.set_input_files(selector, files, timeout=timeout_ms)
+
+    def pages(self) -> list[Any]:
+        return list(self.context.pages)
+
+    async def use_page(self, index: int) -> Any:
+        pages = self.context.pages
+        if index < 0 or index >= len(pages):
+            raise IndexError(f"no page at index {index}")
+        self.page = pages[index]
+        try:
+            await self.page.bring_to_front()
+        except Exception:
+            pass
+        return self.page
+
+    async def new_page(self, url: str | None = None) -> Any:
+        page = await self.context.new_page()
+        self.page = page
+        if url:
+            await page.goto(url)
+        return page
+
+    async def close_page(self, index: int | None = None) -> None:
+        pages = self.context.pages
+        if not pages:
+            return
+        if index is None:
+            index = pages.index(self.page) if self.page in pages else 0
+        if index < 0 or index >= len(pages):
+            raise IndexError(f"no page at index {index}")
+        if len(pages) == 1:
+            raise ValueError("cannot close the last open page")
+        target = pages[index]
+        await target.close()
+        remaining = self.context.pages
+        if remaining:
+            self.page = remaining[min(index, len(remaining) - 1)]
 
     async def cookies(self, urls: list[str] | None = None) -> list[dict[str, Any]]:
         return await self.context.cookies(urls)
