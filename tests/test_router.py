@@ -4,7 +4,14 @@ import pytest
 
 from plague.challenge.solvers.base import SolveResult
 from plague.engines import EngineUnavailable
-from plague.models import Action, Capability, EngineInfo, Tier
+from plague.models import (
+    Action,
+    Capability,
+    Challenge,
+    ChallengeKind,
+    EngineInfo,
+    Tier,
+)
 from plague.router import Plague, PlagueError
 from plague.config import Config
 
@@ -438,13 +445,39 @@ def test_probe_reports_challenge_without_escalation():
 def test_allowed_domains_blocks_other_hosts_and_allows_subdomains():
     fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
     plague = make_plague(
-        {"lightpanda": fast}, allowed_domains=["example.com"]
+        {"lightpanda": fast},
+        allowed_domains=["example.com"],
+        policy="block",
     )
 
     with pytest.raises(PlagueError):
         asyncio.run(plague.fetch("https://evil.test/"))
 
     result = asyncio.run(plague.fetch("https://sub.example.com/"))
+    assert result.ok
+
+
+def test_open_policy_ignores_the_navigation_allowlist():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague(
+        {"lightpanda": fast},
+        allowed_domains=["example.com"],
+        policy="open",
+    )
+
+    result = asyncio.run(plague.fetch("https://evil.test/"))
+    assert result.ok
+
+
+def test_warn_policy_allows_outside_the_navigation_allowlist():
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague(
+        {"lightpanda": fast},
+        allowed_domains=["example.com"],
+        policy="warn",
+    )
+
+    result = asyncio.run(plague.fetch("https://evil.test/"))
     assert result.ok
 
 
@@ -483,7 +516,9 @@ def test_fetch_on_reports_a_blocking_wall_without_raising():
 def test_goto_action_respects_allowed_domains():
     fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
     plague = make_plague(
-        {"lightpanda": fast}, allowed_domains=["example.com"]
+        {"lightpanda": fast},
+        allowed_domains=["example.com"],
+        policy="block",
     )
 
     with pytest.raises(PlagueError):
@@ -510,9 +545,61 @@ def test_solve_domain_allowlist_skips_the_solver():
         {"cloak": stealth},
         solver=solver,
         solve_domains=["allowed.test"],
+        policy="block",
     )
 
     with pytest.raises(PlagueError):
         asyncio.run(plague.fetch("https://blocked.test/", tier=Tier.STEALTH))
 
     assert solver.calls == []
+
+
+def test_solve_mode_never_skips_the_solver():
+    stealth = FakeEngine(
+        "cloak",
+        [{"status": 403, "html": RECAPTCHA_HTML}],
+        caps={Capability.VISUAL},
+    )
+    solver = FakeSolver()
+    plague = make_plague(
+        {"cloak": stealth}, solver=solver, solve_mode="never"
+    )
+
+    with pytest.raises(PlagueError):
+        asyncio.run(plague.fetch("https://blocked.test/", tier=Tier.STEALTH))
+
+    assert solver.calls == []
+
+
+def test_solve_mode_always_attempts_a_non_token_widget(monkeypatch):
+    stealth = FakeEngine(
+        "cloak",
+        [{"status": 200, "html": CLEAN_HTML.replace("</body>", RECAPTCHA_HTML)}],
+        caps={Capability.VISUAL},
+    )
+    solver = FakeSolver()
+    plague = make_plague(
+        {"cloak": stealth}, solver=solver, solve_mode="always"
+    )
+    risk = Challenge(
+        vendor="recaptcha",
+        kind=ChallengeKind.RISK,
+        blocking=False,
+        confidence=0.5,
+        solvable=False,
+        sitekey="SITE_KEY",
+    )
+    monkeypatch.setattr("plague.router.detect", lambda **kwargs: risk)
+
+    async def fake_inject(page, vendor, token):
+        return True
+
+    monkeypatch.setattr("plague.router.inject_token", fake_inject)
+
+    result = asyncio.run(
+        plague.fetch("https://shop.test/", tier=Tier.STEALTH)
+    )
+
+    assert result.ok
+    assert result.solved is True
+    assert len(solver.calls) == 1

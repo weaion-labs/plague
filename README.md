@@ -458,14 +458,21 @@ from another client.
 
 ### Policy
 
-Two environment variables turn the router into a scoped tool:
+Open by default. With `PLAGUE_POLICY=open`, the domain lists are advisory and
+nothing blocks a navigation.
 
-- `PLAGUE_ALLOWED_DOMAINS` blocks every agent navigation outside the listed
-  domains, including subdomains. Applies to `fetch`, `detect`, `act`, `bench`,
-  and the initial URL of `handoff`. A headed human can still navigate onward,
-  so the handoff profile is the boundary there.
-- `PLAGUE_SOLVE_DOMAINS` restricts where the token solver may spend credits.
-  Without it, solving is limited only by key availability.
+- `PLAGUE_POLICY=open` (default), `warn`, `block`, or `strict`.
+- `warn` logs an out-of-list navigation but proceeds.
+- `block` refuses an out-of-list navigation.
+- `strict` also enforces `PLAGUE_SOLVE_DOMAINS` and keeps the audit trail.
+- `PLAGUE_ALLOWED_DOMAINS` is the navigation list.
+- `PLAGUE_SOLVE_DOMAINS` is the solver list.
+- `PLAGUE_SOLVE_MODE=auto` matches token walls. `always` also attempts any
+  challenge where a sitekey exists. `never` disables the solver.
+
+`always` cannot make a risk-score wall solvable. DataDome, Kasada, PerimeterX,
+and reCAPTCHA v3 have no token to buy, so an attempt there will usually fail and
+may spend credits. It is a "try it" switch, not a bypass.
 
 The server prefers the patched Lightpanda binary at
 `.plague/lightpanda-src/zig-out/bin/lightpanda` when it exists. It also exposes
@@ -623,6 +630,8 @@ All settings can come from the environment.
 | `PLAGUE_MIN_TEXT_CHARS` | 40 | Empty app-shell escalation threshold |
 | `PLAGUE_SOLVE_ON_FAST` | false | Allow token solving on Lightpanda (usually pointless) |
 | `PLAGUE_SOLVE_PRESENT` | false | Solve token widgets even when the page is not blocked |
+| `PLAGUE_POLICY` | open | `open`, `warn`, `block`, or `strict` allowlist enforcement |
+| `PLAGUE_SOLVE_MODE` | auto | `auto`, `always`, or `never` solver behavior |
 | `PLAGUE_ALLOWED_DOMAINS` | none | Comma or space separated navigation allowlist |
 | `PLAGUE_SOLVE_DOMAINS` | none | Domains where the token solver may run |
 | `PLAGUE_MCP_IDLE_S` | 180 | Idle seconds before the MCP server closes a warm session |

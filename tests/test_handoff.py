@@ -45,9 +45,21 @@ def test_config_reads_domain_lists(monkeypatch):
         "PLAGUE_ALLOWED_DOMAINS", "Example.com, sub.example.org"
     )
     monkeypatch.setenv("PLAGUE_SOLVE_DOMAINS", "example.com")
+    monkeypatch.setenv("PLAGUE_POLICY", "block")
+    monkeypatch.setenv("PLAGUE_SOLVE_MODE", "always")
     config = Config.from_env()
     assert config.allowed_domains == ["example.com", "sub.example.org"]
     assert config.solve_domains == ["example.com"]
+    assert config.policy == "block"
+    assert config.solve_mode == "always"
+
+
+def test_config_ignores_invalid_policy_values(monkeypatch):
+    monkeypatch.setenv("PLAGUE_POLICY", "chaos")
+    monkeypatch.setenv("PLAGUE_SOLVE_MODE", "sometimes")
+    config = Config.from_env()
+    assert config.policy == "open"
+    assert config.solve_mode == "auto"
 
 
 def test_display_mode_is_native_off_linux(monkeypatch):

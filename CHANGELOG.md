@@ -18,6 +18,9 @@
   launched browser and detaches from an attached one.
 - Added `PLAGUE_ALLOWED_DOMAINS` navigation allowlist and
   `PLAGUE_SOLVE_DOMAINS` solver allowlist.
+- Added `PLAGUE_POLICY=open|warn|block|strict`, default `open`, so allowlists
+  are advisory unless enforcement is requested. Added
+  `PLAGUE_SOLVE_MODE=auto|always|never`.
 - Added saved action recipes: `recipe_save`, `recipe_run`, `recipe_list`, and
   `recipe_delete`, stored as JSON under `.plague/recipes/`.
 - Added bounded recon observation: `network` and `console` report requests,

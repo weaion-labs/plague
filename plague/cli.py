@@ -157,6 +157,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
             "capsolver_key": bool(config.capsolver_key),
             "twocaptcha_key": bool(config.twocaptcha_key),
             "error": plague.solver_error,
+            "mode": config.solve_mode,
         }
         paths = {
             "lightpanda_bin": config.lightpanda_bin,
@@ -164,6 +165,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
             "cache": str(project_cache_dir()),
         }
         policy = {
+            "mode": config.policy,
             "allowed_domains": config.allowed_domains,
             "solve_domains": config.solve_domains,
         }
@@ -202,6 +204,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
     console.print("[bold]solver[/bold]")
     console.print(f"  requested: {solver['requested']}")
     console.print(f"  active:    {solver['active'] or 'none'}")
+    console.print(f"  mode:      {solver['mode']}")
     console.print(f"  capsolver key: {'set' if solver['capsolver_key'] else 'missing'}")
     console.print(f"  2captcha key:  {'set' if solver['twocaptcha_key'] else 'missing'}")
     if solver["error"]:
@@ -209,6 +212,7 @@ def doctor(do_install: bool, as_json: bool) -> None:
 
     console.print()
     console.print("[bold]policy[/bold]")
+    console.print(f"  mode: {policy['mode']}")
     console.print(
         "  allowed domains: "
         + (", ".join(policy["allowed_domains"]) or "any")

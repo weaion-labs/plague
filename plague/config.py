@@ -28,6 +28,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    raw = os.environ.get(name, "").strip().lower()
+    return raw if raw in choices else default
+
+
 def _env_list(name: str) -> list[str]:
     raw = os.environ.get(name, "")
     return [
@@ -126,6 +131,7 @@ class Config:
     manual_timeout_s: int = 300
     solve_on_fast: bool = False
     solve_present: bool = False
+    solve_mode: str = "auto"  # auto | always | never
     js_challenge_rounds: int = 3
     js_challenge_wait_ms: int = 2500
     min_text_chars: int = 40
@@ -135,6 +141,7 @@ class Config:
     evidence_limit: int = 500
 
     # Policy. Empty lists mean "no restriction".
+    policy: str = "open"  # open | warn | block | strict
     allowed_domains: list[str] = field(default_factory=list)
     solve_domains: list[str] = field(default_factory=list)
 
@@ -178,9 +185,17 @@ class Config:
             manual_timeout_s=_env_int("PLAGUE_MANUAL_TIMEOUT_S", 300),
             solve_on_fast=_env_bool("PLAGUE_SOLVE_ON_FAST", False),
             solve_present=_env_bool("PLAGUE_SOLVE_PRESENT", False),
+            solve_mode=_env_choice(
+                "PLAGUE_SOLVE_MODE", "auto", {"auto", "always", "never"}
+            ),
             js_challenge_rounds=_env_int("PLAGUE_JS_ROUNDS", 3),
             js_challenge_wait_ms=_env_int("PLAGUE_JS_WAIT_MS", 2500),
             min_text_chars=_env_int("PLAGUE_MIN_TEXT_CHARS", 40),
+            policy=_env_choice(
+                "PLAGUE_POLICY",
+                "open",
+                {"open", "warn", "block", "strict"},
+            ),
             allowed_domains=_env_list("PLAGUE_ALLOWED_DOMAINS"),
             solve_domains=_env_list("PLAGUE_SOLVE_DOMAINS"),
             mcp_idle_s=_env_int("PLAGUE_MCP_IDLE_S", 180),

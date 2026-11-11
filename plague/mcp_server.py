@@ -102,11 +102,15 @@ Reading and acting:
   repeated flow does not need regenerated scripts.
 
 Policy:
-- `PLAGUE_ALLOWED_DOMAINS` restricts every navigation when set.
-- `PLAGUE_SOLVE_DOMAINS` restricts where the token solver may run.
+- Default `PLAGUE_POLICY=open`: allowlists are advisory and nothing blocks a
+  navigation. Use `warn`, `block`, or `strict` to enforce them.
+- `PLAGUE_ALLOWED_DOMAINS` is only enforced when the policy is block or strict.
+- `PLAGUE_SOLVE_DOMAINS` is only enforced when the policy is block or strict.
+- `PLAGUE_SOLVE_MODE=auto` matches token walls. `always` also attempts any
+  challenge where a sitekey exists. `never` disables the solver.
 - Without solver keys, token walls are detected and classified but no token is
-  purchased. Risk-score walls are never solved; they need a better identity, a
-  human, or a residential IP.
+  purchased. Risk-score walls have no token to buy; a better identity, a human,
+  or a residential IP is the answer.
 
 Recon and sessions:
 - `network` and `console` read the request log and page logs of the warm page.
@@ -363,8 +367,10 @@ async def doctor() -> dict[str, Any]:
         "solver": {
             "active": plague.solver.name if plague.solver else None,
             "error": plague.solver_error,
+            "mode": plague.config.solve_mode,
         },
         "policy": {
+            "mode": plague.config.policy,
             "allowed_domains": plague.config.allowed_domains,
             "solve_domains": plague.config.solve_domains,
         },

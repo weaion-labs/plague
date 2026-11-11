@@ -990,14 +990,27 @@ class Plague:
 
         if allow_solve is None:
             allow_solve = (
-                engine_name != "lightpanda" or self.config.solve_on_fast
+                engine_name != "lightpanda"
+                or self.config.solve_on_fast
+                or self.config.solve_mode == "always"
             )
+        solve_mode = self.config.solve_mode
         wants_solve = challenge and (
-            challenge.blocking or self.config.solve_present
+            challenge.blocking
+            or self.config.solve_present
+            or solve_mode == "always"
+        )
+        kind_is_solvable = (
+            challenge is not None
+            and (
+                challenge.kind is ChallengeKind.TOKEN
+                or solve_mode == "always"
+            )
         )
         if (
             wants_solve
-            and challenge.kind is ChallengeKind.TOKEN
+            and solve_mode != "never"
+            and kind_is_solvable
             and self.solver is not None
             and allow_solve
         ):
@@ -1068,22 +1081,43 @@ class Plague:
         return nav, html, challenge, solved, solver_name, cost, solver_failure
 
     def _guard(self, url: str) -> None:
-        """Enforce PLAGUE_ALLOWED_DOMAINS when it is set."""
+        """Apply PLAGUE_ALLOWED_DOMAINS according to the policy mode."""
         domains = self.config.allowed_domains
         if not domains:
             return
+        policy = self.config.policy
+        if policy == "open":
+            return
         host = (urlparse(url).hostname or "").lower()
-        if not host or not self._domain_matches(host, domains):
-            raise PlagueError(
-                f"domain not allowed by PLAGUE_ALLOWED_DOMAINS: {host or url}"
+        if host and self._domain_matches(host, domains):
+            return
+        if policy == "warn":
+            log.warning(
+                "navigation outside PLAGUE_ALLOWED_DOMAINS (policy=warn): %s",
+                host or url,
             )
+            return
+        raise PlagueError(
+            f"domain not allowed by PLAGUE_ALLOWED_DOMAINS: {host or url}"
+        )
 
     def _solve_allowed(self, url: str) -> bool:
+        if self.config.solve_mode == "never":
+            return False
         domains = self.config.solve_domains
         if not domains:
             return True
         host = (urlparse(url).hostname or "").lower()
-        return bool(host) and self._domain_matches(host, domains)
+        if host and self._domain_matches(host, domains):
+            return True
+        if self.config.policy in {"open", "warn"}:
+            if self.config.policy == "warn":
+                log.warning(
+                    "solver outside PLAGUE_SOLVE_DOMAINS (policy=warn): %s",
+                    host or url,
+                )
+            return True
+        return False
 
     @staticmethod
     def _domain_matches(host: str, domains: Iterable[str]) -> bool:
