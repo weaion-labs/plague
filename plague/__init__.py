@@ -17,6 +17,7 @@ from .models import (
     EngineInfo,
     Profile,
     Result,
+    SolveReport,
     Tier,
 )
 from .router import Plague, PlagueError, Probe
@@ -37,6 +38,7 @@ __all__ = [
     "Probe",
     "Profile",
     "Result",
+    "SolveReport",
     "Tier",
     "__version__",
     "detect",

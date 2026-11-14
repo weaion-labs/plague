@@ -121,6 +121,7 @@ def test_mcp_server_lists_tools_and_reports_doctor():
         "act",
         "api_request",
         "bench",
+        "captcha",
         "captcha_demos",
         "console",
         "detect",
@@ -128,8 +129,10 @@ def test_mcp_server_lists_tools_and_reports_doctor():
         "fetch",
         "fingerprint",
         "handoff",
+        "launch",
         "network",
         "network_export",
+        "read",
         "recipe_delete",
         "recipe_list",
         "recipe_run",
@@ -172,11 +175,22 @@ def test_mcp_warm_fetch_and_snapshot_reuse_one_session():
                 snap = await session.call_tool(
                     "snapshot", {"tier": "fast", "limit": 20}
                 )
+                fast_read = await session.call_tool(
+                    "read", {"url": url}
+                )
+                launched = await session.call_tool(
+                    "launch", {"tier": "fast"}
+                )
+                cap = await session.call_tool(
+                    "captcha", {"action": "status"}
+                )
                 await session.call_tool("release", {"all_sessions": True})
-                return first, second, snap
+                return first, second, snap, fast_read, launched, cap
 
     try:
-        first, second, snap = asyncio.run(scenario())
+        first, second, snap, fast_read, launched, cap = asyncio.run(
+            scenario()
+        )
     finally:
         server.shutdown()
         server.server_close()
@@ -184,6 +198,9 @@ def test_mcp_warm_fetch_and_snapshot_reuse_one_session():
     first_data = json.loads(first.content[0].text)
     second_data = json.loads(second.content[0].text)
     snapshot_data = json.loads(snap.content[0].text)
+    read_data = json.loads(fast_read.content[0].text)
+    launch_data = json.loads(launched.content[0].text)
+    captcha_data = json.loads(cap.content[0].text)
 
     assert first_data["ok"] is True
     assert second_data["ok"] is True
@@ -192,6 +209,11 @@ def test_mcp_warm_fetch_and_snapshot_reuse_one_session():
     assert snapshot_data["count"] >= 2
     names = {item["name"] for item in snapshot_data["elements"]}
     assert "Next page" in names
+    assert read_data["ok"] is True
+    assert "Hello" in read_data["text"]
+    assert launch_data["engine"] == "lightpanda"
+    assert launch_data["tier"] == "fast"
+    assert captcha_data["challenge"] is None
 
 
 @pytest.mark.integration

@@ -27,7 +27,7 @@ from .challenge.actions import click_turnstile
 from .challenge.capture import install as install_capture
 from .challenge.live import extract_hints
 from .config import Config
-from .engines import BaseEngine, EngineUnavailable, Session, default_engines
+from .engines import BaseEngine, EngineUnavailable, Nav, Session, default_engines
 from .interact import run_actions as run_action_list
 from .models import (
     Action,
@@ -37,6 +37,7 @@ from .models import (
     ChallengeKind,
     Profile,
     Result,
+    SolveReport,
     Tier,
 )
 from .text import html_to_title
@@ -569,6 +570,92 @@ class Plague:
             elapsed_ms=elapsed_ms,
         )
 
+    async def solve_page(
+        self,
+        session: Session,
+        *,
+        wait_until: str = "domcontentloaded",
+        timeout_ms: int | None = None,
+    ) -> SolveReport:
+        """Detect and solve a challenge on the session's current page.
+
+        This is the explicit, on-demand path behind the MCP ``captcha`` tool. It
+        does not navigate first, so it is useful when a page is already open and
+        the caller wants to know whether the wall is solvable, or wants to spend
+        a token now.
+        """
+        url = str(getattr(session.page, "url", ""))
+        self._guard(url)
+        timeout = timeout_ms or self.config.timeout_ms
+        started = time.monotonic()
+
+        def elapsed() -> int:
+            return int((time.monotonic() - started) * 1000)
+
+        html = await session.content()
+        last = getattr(session, "last_nav", None)
+        if last is not None and getattr(last, "url", "") == url:
+            status = last.status
+            headers = last.headers
+        else:
+            status = None
+            headers = {}
+        challenge = detect(
+            status=status, url=url, headers=headers, html=html
+        )
+        report = SolveReport(url=url, status=None, challenge=challenge)
+        if challenge is None:
+            report.error = "no challenge detected"
+            report.elapsed_ms = elapsed()
+            return report
+        if self.config.solve_mode == "never":
+            report.error = "solver disabled by PLAGUE_SOLVE_MODE"
+            report.elapsed_ms = elapsed()
+            return report
+        if self.solver is None:
+            report.error = self.solver_error or "no solver configured"
+            report.elapsed_ms = elapsed()
+            return report
+
+        nav = Nav(url=url, status=None, headers={})
+        (
+            nav,
+            html,
+            challenge,
+            solved,
+            solver_name,
+            cost,
+            error,
+        ) = await self._resolve_wall(
+            session,
+            session.info.name,
+            url,
+            nav,
+            html,
+            challenge=challenge,
+            wait_until=wait_until,
+            timeout_ms=timeout,
+            allow_solve=True,
+        )
+
+        report.status = nav.status
+        report.challenge = challenge
+        report.solved = solved
+        report.solver = solver_name
+        report.cost_usd = cost
+        report.error = error
+        report.elapsed_ms = elapsed()
+        if (
+            not solved
+            and error is None
+            and challenge is not None
+            and challenge.blocking
+        ):
+            report.error = (
+                "challenge is still blocking after the solve attempt"
+            )
+        return report
+
     async def fetch_many(
         self,
         urls: Iterable[str],
@@ -922,11 +1009,16 @@ class Plague:
 
     @staticmethod
     def _nav(session, previous):
-        return type(previous)(
+        nav = type(previous)(
             url=session.page.url,
             status=previous.status,
             headers=previous.headers,
         )
+        try:
+            session.last_nav = nav
+        except Exception:
+            pass
+        return nav
 
     async def _run_actions(
         self, session: Session, actions: Iterable[Action]

@@ -603,3 +603,100 @@ def test_solve_mode_always_attempts_a_non_token_widget(monkeypatch):
     assert result.ok
     assert result.solved is True
     assert len(solver.calls) == 1
+
+
+def test_solve_page_reports_no_challenge(monkeypatch):
+    fast = FakeEngine("lightpanda", [{"status": 200, "html": CLEAN_HTML}])
+    plague = make_plague({"lightpanda": fast}, solver=FakeSolver())
+    monkeypatch.setattr("plague.router.detect", lambda **kwargs: None)
+
+    async def run():
+        session = await plague.open_session(Tier.FAST)
+        try:
+            return await plague.solve_page(session)
+        finally:
+            await session.close()
+
+    report = asyncio.run(run())
+    assert report.challenge is None
+    assert report.solved is False
+    assert "no challenge" in (report.error or "")
+
+
+def test_solve_page_without_a_solver(monkeypatch):
+    engine = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}],
+        caps={Capability.VISUAL},
+    )
+    plague = make_plague({"cloak": engine}, solver=None)
+    blocking = Challenge(
+        vendor="recaptcha",
+        kind=ChallengeKind.TOKEN,
+        blocking=True,
+        confidence=0.9,
+        solvable=True,
+        sitekey="SITE_KEY",
+    )
+    monkeypatch.setattr(
+        "plague.router.detect", lambda **kwargs: blocking
+    )
+
+    async def run():
+        session = await plague.open_session(Tier.STEALTH)
+        try:
+            return await plague.solve_page(session)
+        finally:
+            await session.close()
+
+    report = asyncio.run(run())
+    assert report.solved is False
+    assert "no solver" in (report.error or "")
+
+
+def test_solve_page_solves_a_token_wall(monkeypatch):
+    engine = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}],
+        caps={Capability.VISUAL},
+    )
+    solver = FakeSolver()
+    plague = make_plague({"cloak": engine}, solver=solver)
+    info = engine.info
+    blocking = Challenge(
+        vendor="recaptcha",
+        kind=ChallengeKind.TOKEN,
+        blocking=True,
+        confidence=0.9,
+        solvable=True,
+        sitekey="SITE_KEY",
+    )
+    calls = {"n": 0}
+
+    def fake_detect(**kwargs):
+        calls["n"] += 1
+        return blocking if calls["n"] == 1 else None
+
+    monkeypatch.setattr("plague.router.detect", fake_detect)
+
+    async def fake_inject(page, vendor, token):
+        return True
+
+    monkeypatch.setattr("plague.router.inject_token", fake_inject)
+
+    class SolveSession(FakeSession):
+        def __init__(self):
+            super().__init__(
+                [{"status": 200, "html": CLEAN_HTML}], info
+            )
+            self.first = True
+
+        async def content(self):
+            if self.first:
+                self.first = False
+                return RECAPTCHA_HTML
+            return CLEAN_HTML
+
+    report = asyncio.run(plague.solve_page(SolveSession()))
+    assert report.solved is True
+    assert report.solver == "fake"
+    assert report.challenge is None
+    assert len(solver.calls) == 1

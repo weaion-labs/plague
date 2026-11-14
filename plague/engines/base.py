@@ -71,6 +71,7 @@ class Session:
         self.info = info
         self._closers = closers or []
         self._closed = False
+        self.last_nav = Nav(url="", status=None, headers={})
 
     def supports(self, capability: Capability) -> bool:
         return self.info.supports(capability)
@@ -100,7 +101,9 @@ class Session:
                 }
             except Exception:
                 headers = {}
-        return Nav(url=self.page.url, status=status, headers=headers)
+        nav = Nav(url=self.page.url, status=status, headers=headers)
+        self.last_nav = nav
+        return nav
 
     async def title(self) -> str:
         try:
@@ -162,7 +165,9 @@ class Session:
                 }
             except Exception:
                 headers = {}
-        return Nav(url=self.page.url, status=status, headers=headers)
+        nav = Nav(url=self.page.url, status=status, headers=headers)
+        self.last_nav = nav
+        return nav
 
     async def wait_for_selector(
         self, selector: str, timeout_ms: int | None = None
@@ -207,6 +212,7 @@ class Session:
             await self.page.bring_to_front()
         except Exception:
             pass
+        self.last_nav = Nav(url=str(self.page.url), status=None, headers={})
         return self.page
 
     async def new_page(self, url: str | None = None) -> Any:
@@ -214,6 +220,7 @@ class Session:
         self.page = page
         if url:
             await page.goto(url)
+        self.last_nav = Nav(url=str(self.page.url), status=None, headers={})
         return page
 
     async def close_page(self, index: int | None = None) -> None:
@@ -231,6 +238,9 @@ class Session:
         remaining = self.context.pages
         if remaining:
             self.page = remaining[min(index, len(remaining) - 1)]
+            self.last_nav = Nav(
+                url=str(self.page.url), status=None, headers={}
+            )
 
     async def cookies(self, urls: list[str] | None = None) -> list[dict[str, Any]]:
         return await self.context.cookies(urls)

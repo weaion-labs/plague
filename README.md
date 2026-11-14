@@ -273,6 +273,9 @@ Tools exposed to the agent:
 |---|---|
 | `plague_doctor` | Engine availability, active solver, policy, warm sessions, handoff state |
 | `plague_fetch` | Fetch a URL through the tier router, with optional actions |
+| `plague_read` | Fast Lightpanda-only text and links, no rendering |
+| `plague_launch` | Open Cloak, Chrome, or Lightpanda and make it the active session |
+| `plague_captcha` | Inspect the current challenge, or solve it on demand |
 | `plague_snapshot` | Interactive elements as compact refs such as `e3` |
 | `plague_act` | Click, fill, press, select, scroll, back, goto on refs or selectors |
 | `plague_network` | Request log with method, URL, resource type, and status |
@@ -334,6 +337,38 @@ Interactive tools (`act`, `snapshot`, `network`, `console`, `screenshot`,
 `tabs`, `storage_save`) default to `tier="auto"`, which means the most recently
 used tier. After a stealth fetch you do not have to repeat the tier on every
 follow-up call.
+
+### Fast reads, launch, and captcha
+
+`read` is deliberately the fast path. It uses Lightpanda only and returns text
+plus links. It does not render or escalate, so it fails with a hint when the
+page is a JS app or a wall.
+
+```text
+read https://docs.example/page
+```
+
+`launch` is the explicit way to open a rendering tier and keep it active. Use
+`tier="stealth"` for Cloak, `tier="chrome"` for stock Chrome, or `tier="fast"`
+for Lightpanda. It accepts `profile_dir`, `headed`, `proxy`, and `storage`, so a
+bounty can get its own identity.
+
+```text
+launch tier=stealth url=https://target.example/login
+launch tier=chrome profile_dir=./.playwright-profile
+```
+
+`captcha` inspects or solves the page that is already open.
+
+```text
+captcha action=status
+captcha action=solve
+```
+
+It reports the vendor, kind, blocking state, sitekey, and whether a solver is
+configured. Solving needs `CAPSOLVER_API_KEY` or `TWOCAPTCHA_API_KEY`. In
+`PLAGUE_SOLVE_MODE=always`, it also attempts risk-classified pages that expose a
+sitekey, but a page with no token cannot be solved by any provider.
 
 ### Recon: requests and logs
 

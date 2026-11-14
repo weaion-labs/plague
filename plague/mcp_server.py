@@ -90,11 +90,16 @@ a wall appears, stock Chrome as the reference. It keeps one warm fast session,
 so consecutive reads do not pay a process start.
 
 Reading and acting:
+- `read` is the fastest path: Lightpanda only, text and links, no rendering.
 - `fetch` retrieves a page. `tier=auto` uses the warm fast session and escalates
   to Cloak on a wall. Pass `actions` to click or fill before extraction.
+- `launch` opens a warm browser on a chosen tier, `stealth` for Cloak, `chrome`
+  for stock Chrome, or `fast` for Lightpanda, and makes it the active session.
 - `snapshot` lists interactive elements with short refs such as `e3`.
 - `act` runs click/fill/press/select/check/scroll/back/goto actions on the warm
   session or on the headed handoff browser. Prefer refs over CSS selectors.
+- `captcha` reports the challenge on the current page, or solves it on demand
+  with `action="solve"` when a solver key is configured.
 - `handoff` launches a headed Chrome, or attaches to an existing CDP endpoint,
   and returns a CDP URL. Use it for logins, 2FA, payments, and risk-score walls
   that a human must clear. `release` closes or detaches.
@@ -612,6 +617,271 @@ async def fetch(
 
 
 @mcp.tool()
+async def read(
+    url: str,
+    max_text_chars: int = 8_000,
+    links: bool = True,
+    timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Read a public page with Lightpanda only, with no rendering or escalation.
+
+    This is the fastest path. Use it for documentation, articles, and public
+    pages. If the page is a JS app or a wall, it returns a hint to use `fetch`
+    instead.
+    """
+    await RUNTIME.sweep()
+    try:
+        RUNTIME.check_url(url)
+    except PlagueError as exc:
+        return _error(str(exc))
+
+    plague = RUNTIME.plague()
+    snapshot = None
+    try:
+        async with RUNTIME.using("fast") as session:
+            result = await plague.fetch_on(
+                session,
+                url,
+                timeout_ms=timeout_ms,
+                allow_solve=False,
+            )
+            if links:
+                try:
+                    snapshot = await collect_snapshot(session, limit=250)
+                except Exception:
+                    snapshot = None
+    except Exception as exc:
+        await RUNTIME.drop("fast")
+        return _error(f"{type(exc).__name__}: {exc}")
+
+    data = result_dict(result, include_html=False)
+    data["warm"] = True
+    data["links"] = []
+    if snapshot:
+        data["links"] = [
+            {
+                "text": element.get("name"),
+                "href": element.get("href"),
+                "ref": element.get("ref"),
+            }
+            for element in snapshot.get("elements", [])
+            if element.get("role") == "link" and element.get("href")
+        ][:50]
+
+    blocked = bool(result.challenge and result.challenge.blocking)
+    shell = any(
+        attempt.error and "shell" in attempt.error
+        for attempt in result.attempts
+    )
+    if blocked or shell:
+        data["ok"] = False
+        data["hint"] = (
+            "the fast tier cannot render or clear this page; use fetch with "
+            "tier=auto or stealth"
+        )
+    return _trim(data, max_text_chars)
+
+
+@mcp.tool()
+async def launch(
+    tier: str = "stealth",
+    url: str | None = None,
+    profile_dir: str | None = None,
+    headed: bool | None = None,
+    proxy: str | None = None,
+    storage: str | None = None,
+    timeout_ms: int = 30_000,
+) -> dict[str, Any]:
+    """Open a warm browser on a chosen tier and make it the active session.
+
+    `tier="stealth"` opens CloakBrowser, `chrome` opens stock Chrome, and `fast`
+    opens Lightpanda. Follow-up `act`, `snapshot`, `network`, and `screenshot`
+    calls default to the active tier. Use `profile_dir` for a per-program
+    identity, or `storage` to load saved cookies.
+    """
+    await RUNTIME.sweep()
+    if tier == "handoff":
+        return _error(
+            "launch does not open handoff; use handoff for a human-driven browser"
+        )
+    if url:
+        try:
+            RUNTIME.check_url(url)
+        except PlagueError as exc:
+            return _error(str(exc))
+
+    tier_value = Tier(tier)
+    key = _tier_key(tier_value)
+
+    overrides = any(
+        value is not None
+        for value in (profile_dir, headed, proxy, storage)
+    )
+    if overrides:
+        profile = RUNTIME.config().profile()
+        if profile_dir:
+            profile.user_data_dir = str(
+                Path(profile_dir).expanduser()
+            )
+        if headed is not None:
+            profile.headless = not headed
+        if proxy:
+            profile.proxy = proxy
+        if storage:
+            try:
+                state = load_state(storage)
+            except StorageError as exc:
+                return _error(str(exc))
+            profile.user_data_dir = None
+            profile.storage_state = state
+        await RUNTIME.set_profile(key, profile)
+
+    try:
+        async with RUNTIME.using(key) as session:
+            info = {
+                "ok": True,
+                "tier": key,
+                "active_tier": key,
+                "engine": session.info.name,
+                "url": str(getattr(session.page, "url", "")),
+            }
+            if not url:
+                if key == "fast" and headed:
+                    info["note"] = "Lightpanda is always headless"
+                return info
+            result = await RUNTIME.plague().fetch_on(
+                session, url, timeout_ms=timeout_ms
+            )
+    except Exception as exc:
+        return _error(f"{type(exc).__name__}: {exc}")
+
+    if key in {"stealth", "chrome"} and result.ok:
+        RUNTIME.pin(url, key)
+    data = result_dict(result)
+    data["tier"] = key
+    data["active_tier"] = key
+    data["session_engine"] = result.engine
+    if result.challenge and result.challenge.blocking:
+        data["hint"] = (
+            "the page is still blocked; call captcha action=solve, or handoff "
+            "for a human step"
+        )
+    return data
+
+
+async def _captcha_on(
+    session: Session, action: str, timeout_ms: int
+) -> dict[str, Any]:
+    plague = RUNTIME.plague()
+    url = str(getattr(session.page, "url", ""))
+    html = await session.content()
+    last = getattr(session, "last_nav", None)
+    if last is not None and getattr(last, "url", "") == url:
+        status = last.status
+        headers = last.headers
+    else:
+        status = None
+        headers = {}
+    challenge = detect_challenge(
+        status=status, url=url, headers=headers, html=html
+    )
+    solver = {
+        "active": plague.solver.name if plague.solver else None,
+        "mode": plague.config.solve_mode,
+        "error": plague.solver_error,
+    }
+    data: dict[str, Any] = {
+        "ok": True,
+        "url": url,
+        "engine": session.info.name,
+        "action": action,
+        "challenge": challenge_dict(challenge),
+        "solver": solver,
+    }
+    if action == "status":
+        if challenge is None:
+            data["hint"] = "no challenge detected"
+        elif not plague.solver:
+            data["hint"] = (
+                "no token solver configured; set CAPSOLVER_API_KEY or "
+                "TWOCAPTCHA_API_KEY"
+            )
+            if challenge.kind.value == "risk":
+                data["hint"] += "; risk-score walls cannot be token-solved"
+        return data
+
+    if challenge is None:
+        data["ok"] = False
+        data["solved"] = False
+        data["error"] = "no challenge detected"
+        return data
+    try:
+        report = await plague.solve_page(
+            session, timeout_ms=timeout_ms
+        )
+    except Exception as exc:
+        data["ok"] = False
+        data["error"] = f"{type(exc).__name__}: {exc}"
+        return data
+    data.update(
+        {
+            "ok": report.solved,
+            "solved": report.solved,
+            "status": report.status,
+            "solver_used": report.solver,
+            "cost_usd": report.cost_usd,
+            "error": report.error,
+            "elapsed_ms": report.elapsed_ms,
+            "challenge": challenge_dict(report.challenge),
+        }
+    )
+    if (
+        not report.solved
+        and report.challenge is not None
+        and report.challenge.blocking
+    ):
+        data["hint"] = "still blocked; use handoff for a human step"
+    return data
+
+
+@mcp.tool()
+async def captcha(
+    action: str = "status",
+    timeout_ms: int = 30_000,
+    tier: str = "auto",
+) -> dict[str, Any]:
+    """Inspect or solve the challenge on the current page.
+
+    `action="status"` reports the vendor, kind, blocking, solvability, sitekey,
+    and whether a solver is configured. `action="solve"` attempts the configured
+    token solver, injects the token, reloads, and reports the result. The solver
+    still needs CAPSOLVER_API_KEY or TWOCAPTCHA_API_KEY.
+    """
+    action = action.strip().lower()
+    if action not in {"status", "solve"}:
+        return _error("action must be 'status' or 'solve'")
+
+    if tier == "handoff":
+        manager = RUNTIME.handoff_manager()
+        if not manager.running:
+            return _error("no handoff browser is running; call handoff first")
+        try:
+            async with manager.session() as session:
+                return await _captcha_on(session, action, timeout_ms)
+        except Exception as exc:
+            return _error(f"{type(exc).__name__}: {exc}")
+
+    key = RUNTIME.tier_key(tier)
+    if key not in RUNTIME._sessions:
+        return _error("no warm session; call fetch or launch first")
+    try:
+        async with RUNTIME.using(key) as session:
+            return await _captcha_on(session, action, timeout_ms)
+    except Exception as exc:
+        return _error(f"{type(exc).__name__}: {exc}")
+
+
+@mcp.tool()
 async def act(
     actions: list[dict[str, Any]],
     tier: str = "auto",
@@ -707,10 +977,18 @@ async def _act_on(
     await run_actions(session, actions)
     html = await session.content()
 
+    current = str(getattr(session.page, "url", ""))
+    last = getattr(session, "last_nav", None)
+    if last is not None and getattr(last, "url", "") == current:
+        status = last.status
+        headers = last.headers
+    else:
+        status = None
+        headers = {}
     challenge = detect_challenge(
-        status=None,
-        url=str(getattr(session.page, "url", "")),
-        headers={},
+        status=status,
+        url=current,
+        headers=headers,
         html=html,
     )
     data: dict[str, Any] = {

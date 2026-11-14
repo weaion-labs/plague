@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added `read` for a fast Lightpanda-only text and link read, with a hint to
+  escalate when the page needs rendering.
+- Added `launch` to open Cloak, Chrome, or Lightpanda as a first-class MCP
+  session, with per-session `profile_dir`, `headed`, `proxy`, and `storage`.
+- Added `captcha` for on-demand challenge status and solving on the current
+  page. It reports blocking state, sitekey, solver status, cost, and outcome.
+- Sessions now keep the last navigation status and headers, so challenge
+  detection on an already-open page is accurate instead of guessing from the
+  DOM alone.
+
 - Added warm MCP sessions: one long-lived fast-tier browser is reused across
   `fetch` calls, with an idle timeout and automatic cold retry when a session
   dies.

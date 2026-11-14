@@ -102,6 +102,20 @@ class Result:
 
 
 @dataclass
+class SolveReport:
+    """What happened when solving a challenge on an already-open page."""
+
+    url: str
+    status: int | None
+    challenge: Challenge | None
+    solved: bool = False
+    solver: str | None = None
+    cost_usd: float = 0.0
+    error: str | None = None
+    elapsed_ms: int = 0
+
+
+@dataclass
 class Profile:
     """Per-session browser identity and connection settings."""
 
