@@ -57,6 +57,11 @@ def project_cache_dir() -> Path:
     return Path.home() / ".cache" / "plague"
 
 
+def default_profile_dir(engine: str) -> str:
+    """A per-engine persistent profile so heavy tiers do not lock each other."""
+    return str(project_cache_dir() / "profiles" / f"default-{engine}")
+
+
 def find_lightpanda() -> str | None:
     explicit = os.environ.get("PLAGUE_LIGHTPANDA_BIN")
     if explicit:
@@ -144,6 +149,8 @@ class Config:
     policy: str = "open"  # open | warn | block | strict
     allowed_domains: list[str] = field(default_factory=list)
     solve_domains: list[str] = field(default_factory=list)
+    auto_cloak: bool = False
+    persistent_profiles: bool = False
 
     # Long-lived MCP server
     mcp_idle_s: int = 180
@@ -195,6 +202,10 @@ class Config:
                 "PLAGUE_POLICY",
                 "open",
                 {"open", "warn", "block", "strict"},
+            ),
+            auto_cloak=_env_bool("PLAGUE_AUTO_CLOAK", False),
+            persistent_profiles=_env_bool(
+                "PLAGUE_PERSISTENT_PROFILES", False
             ),
             allowed_domains=_env_list("PLAGUE_ALLOWED_DOMAINS"),
             solve_domains=_env_list("PLAGUE_SOLVE_DOMAINS"),

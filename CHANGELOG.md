@@ -3,10 +3,15 @@
 ## Unreleased
 
 - Added a Patchright engine and `tier="patchright"`: patched Playwright
-  Chromium with runtime stealth, no license server, no seat limit. Auto
-  escalation now runs Lightpanda, then Patchright, then Cloak, then Chrome.
+  Chromium with runtime stealth, no license server, no seat limit.
+- Auto escalation now runs Lightpanda, then Patchright, then Chrome. Cloak is
+  only in the chain when `PLAGUE_AUTO_CLOAK=1`. A token wall with no usable
+  solver stops early instead of launching engines that cannot help.
+- A successful auto escalation pins the host to the engine that won.
 - Added named per-program profiles to `launch` with `profile="name"`, stored
-  under `.plague/profiles/`.
+  under `.plague/profiles/`. MCP sessions use persistent per-engine profiles by
+  default; the library and CLI keep them off so batch workers do not fight over
+  a profile.
 - Fixed auto escalation never running when the fast tier was not pinned.
 
 - Added `read` for a fast Lightpanda-only text and link read, with a hint to

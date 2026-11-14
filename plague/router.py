@@ -965,6 +965,12 @@ class Plague:
         chain: list[str] = []
         skipped: list[Attempt] = []
         for name in CHAINS[tier]:
+            if (
+                tier is Tier.AUTO
+                and name == "cloak"
+                and not self.config.auto_cloak
+            ):
+                continue
             engine = self.engines.get(name)
             if engine is None:
                 continue

@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 
+from ..config import default_profile_dir
 from ..models import Capability, EngineInfo, Profile
 from .base import BaseEngine, EngineError, EngineUnavailable, Session, playwright_proxy
 
@@ -45,6 +46,12 @@ class PatchrightEngine(BaseEngine):
         return True, "installed"
 
     async def open(self, profile: Profile) -> Session:
+        if (
+            profile.user_data_dir is None
+            and profile.storage_state is None
+            and self.config.persistent_profiles
+        ):
+            profile.user_data_dir = default_profile_dir("patchright")
         try:
             from patchright.async_api import async_playwright
         except Exception as exc:  # pragma: no cover - depends on the install

@@ -148,7 +148,9 @@ def test_auto_escalates_from_lightpanda_to_cloak():
     stealth = FakeEngine(
         "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
     )
-    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+    plague = make_plague(
+        {"lightpanda": fast, "cloak": stealth}, auto_cloak=True
+    )
 
     result = asyncio.run(plague.fetch("https://blocked.test/"))
 
@@ -189,12 +191,28 @@ def test_warm_session_reuses_one_engine():
     assert fast.opened == 1
 
 
+def test_auto_does_not_use_cloak_by_default():
+    fast = FakeEngine("lightpanda", [{"status": 403, "html": CF_HTML}])
+    stealth = FakeEngine(
+        "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
+    )
+    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+
+    with pytest.raises(PlagueError) as caught:
+        asyncio.run(plague.fetch("https://blocked.test/"))
+
+    assert stealth.opened == 0
+    assert len(caught.value.attempts) == 1
+
+
 def test_warm_session_falls_back_when_first_engine_unavailable():
     unavailable = UnavailableEngine("lightpanda", [])
     stealth = FakeEngine(
         "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
     )
-    plague = make_plague({"lightpanda": unavailable, "cloak": stealth})
+    plague = make_plague(
+        {"lightpanda": unavailable, "cloak": stealth}, auto_cloak=True
+    )
 
     async def scenario():
         async with plague.session(Tier.AUTO) as session:
@@ -306,7 +324,9 @@ def test_screenshot_requirement_skips_lightpanda():
     stealth = FakeEngine(
         "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
     )
-    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+    plague = make_plague(
+        {"lightpanda": fast, "cloak": stealth}, auto_cloak=True
+    )
 
     result = asyncio.run(
         plague.fetch("https://clean.test/", screenshot="out.png")
@@ -330,7 +350,11 @@ def test_solver_runs_on_stealth_tier(monkeypatch):
         caps={Capability.VISUAL},
     )
     solver = FakeSolver()
-    plague = make_plague({"lightpanda": fast, "cloak": stealth}, solver=solver)
+    plague = make_plague(
+        {"lightpanda": fast, "cloak": stealth},
+        solver=solver,
+        auto_cloak=True,
+    )
 
     async def fake_inject(page, vendor, token):
         return True
@@ -396,7 +420,9 @@ def test_all_engines_failing_raises_with_attempts():
     stealth = FakeEngine(
         "cloak", [{"status": 403, "html": CF_HTML}], caps={Capability.VISUAL}
     )
-    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+    plague = make_plague(
+        {"lightpanda": fast, "cloak": stealth}, auto_cloak=True
+    )
 
     with pytest.raises(PlagueError) as caught:
         asyncio.run(plague.fetch("https://blocked.test/"))
@@ -418,7 +444,9 @@ def test_lightpanda_empty_app_shell_escalates():
     stealth = FakeEngine(
         "cloak", [{"status": 200, "html": CLEAN_HTML}], caps={Capability.VISUAL}
     )
-    plague = make_plague({"lightpanda": fast, "cloak": stealth})
+    plague = make_plague(
+        {"lightpanda": fast, "cloak": stealth}, auto_cloak=True
+    )
 
     result = asyncio.run(plague.fetch("https://app.test/"))
 

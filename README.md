@@ -9,10 +9,10 @@ CloakBrowser stealth. Lightpanda speed. One router.
 
 Plague is the missing router between a fast, rendering-free browser and a real
 stealth Chromium. Clean pages go through a patched Lightpanda with Chrome's
-network fingerprint. Walls escalate to CloakBrowser. Visual or reference work
-goes to stock Chrome.
+network fingerprint. Walls escalate to Patchright, then Chrome, with Cloak
+optional. Visual or reference work goes to stock Chrome.
 
-Plague is not a new browser engine. It is a router with three interchangeable
+Plague is not a new browser engine. It is a router with four interchangeable
 backends, plus a challenge detector and a token-solver layer:
 
 ```
@@ -21,6 +21,7 @@ plague.fetch(url)
   +-- policy and capability filter
         |
         +-- lightpanda   fast, no layout engine, cheap
+        +-- patchright   patched Playwright Chromium, no license
         +-- cloak        patched stealth Chromium
         +-- chrome       stock Chromium or Google Chrome
   |
@@ -32,9 +33,9 @@ plague.fetch(url)
 ```
 
 The important design decision: these engines are alternatives, not layers.
-Chrome and CloakBrowser are both Chromium. Lightpanda is a different species.
-Plague picks one per attempt and escalates when a wall appears. It never
-pretends a rendering-free browser is Chrome.
+Patchright and Chrome are both Chromium. CloakBrowser is a patched Chromium.
+Lightpanda is a different species. Plague picks one per attempt and escalates
+when a wall appears. It never pretends a rendering-free browser is Chrome.
 
 **Measured:** 71 ms warm p50, 155 MB per session, 100% on the local extraction
 suite, and a matching Chrome TLS cipher and HTTP/2 fingerprint. See
@@ -326,8 +327,9 @@ changes, so take a fresh `snapshot` after a step that mutates the page.
 
 `tier=patchright`, `tier=stealth`, and `tier=chrome` also keep a warm session,
 one heavy session at a time. `tier=auto` uses the fast session and falls back to
-Patchright, then Cloak, on a wall, which keeps memory and Cloak concurrency seats
-low. For an interactive flow on a protected page, call `fetch` with
+Patchright, then Chrome, on a wall, which keeps memory and Cloak concurrency
+seats low. Set `PLAGUE_AUTO_CLOAK=1` if you want auto escalation to try Cloak
+after Patchright. For an interactive flow on a protected page, call `fetch` with
 `tier="patchright"` for the no-license stealth-lite tier, or `tier="stealth"`
 for Cloak, so the session stays warm for `act`. Set
 `PLAGUE_MCP_KEEP_STEALTH=1` if you want auto escalation to keep the heavy
@@ -335,7 +337,7 @@ session warm too.
 
 After a successful `tier="patchright"`, `tier="stealth"`, or `tier="chrome"`
 fetch, that host stays pinned to the heavy tier for `PLAGUE_HOST_TIER_TTL`
-seconds (default 600).
+seconds (default 600). A successful auto escalation pins the engine that won.
 `tier="auto"` then reuses the same session, so an authenticated flow keeps its
 cookies instead of dropping back to Lightpanda. `release(all_sessions=True)`
 clears the pins.
@@ -679,6 +681,8 @@ All settings can come from the environment.
 | `PLAGUE_MCP_IDLE_S` | 180 | Idle seconds before the MCP server closes a warm session |
 | `PLAGUE_MCP_KEEP_STEALTH` | false | Keep the auto-escalated Patchright or Cloak session warm for follow-up `act` calls |
 | `PLAGUE_HOST_TIER_TTL` | 600 | Seconds a host stays pinned to stealth or chrome after an explicit fetch |
+| `PLAGUE_AUTO_CLOAK` | false | Include Cloak in auto escalation after Patchright |
+| `PLAGUE_PERSISTENT_PROFILES` | false | Persistent per-engine profiles; the MCP server turns it on by default |
 | `PLAGUE_SCREENSHOT_DIR` | .plague/screenshots | Default output directory for `screenshot` |
 | `PLAGUE_HANDOFF_PORT` | 0 | Fixed CDP port for the headed handoff, or 0 for a free port |
 | `PLAGUE_HANDOFF_OZONE` | auto | `auto`, `wayland`, or `x11` for the headed handoff |
@@ -701,7 +705,7 @@ The tier chains:
 
 | Tier | Chain |
 |---|---|
-| `auto` | lightpanda -> patchright -> cloak -> chrome |
+| `auto` | lightpanda -> patchright -> chrome (adds cloak when `PLAGUE_AUTO_CLOAK=1`) |
 | `fast` | lightpanda |
 | `patchright` | patchright |
 | `stealth` | cloak |

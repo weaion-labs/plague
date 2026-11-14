@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from ..config import default_profile_dir
 from ..models import Capability, EngineInfo, Profile
 from .base import BaseEngine, EngineError, EngineUnavailable, Session
 
@@ -56,6 +57,13 @@ class CloakEngine(BaseEngine):
             )
         except Exception as exc:
             raise EngineUnavailable(f"cloakbrowser not installed: {exc}") from exc
+
+        if (
+            profile.user_data_dir is None
+            and profile.storage_state is None
+            and self.config.persistent_profiles
+        ):
+            profile.user_data_dir = default_profile_dir("cloak")
 
         kwargs: dict = {
             "headless": profile.headless,

@@ -6,6 +6,7 @@ import logging
 
 from playwright.async_api import async_playwright
 
+from ..config import default_profile_dir
 from ..models import Capability, EngineInfo, Profile
 from .base import BaseEngine, EngineError, Session, playwright_proxy
 
@@ -45,6 +46,12 @@ class ChromeEngine(BaseEngine):
             return False, f"playwright unavailable: {exc}"
 
     async def open(self, profile: Profile) -> Session:
+        if (
+            profile.user_data_dir is None
+            and profile.storage_state is None
+            and self.config.persistent_profiles
+        ):
+            profile.user_data_dir = default_profile_dir("chrome")
         pw = await async_playwright().start()
         try:
             launch_kwargs: dict = {

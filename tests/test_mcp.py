@@ -90,9 +90,57 @@ def test_mcp_detect_names_do_not_collide():
     assert server.detect is not detector
 
 
+def test_runtime_pins_a_host_to_a_tier():
+    import plague.mcp_server as server
+
+    url = "https://pin-test.example/"
+    server.RUNTIME.host_tiers.clear()
+    try:
+        server.RUNTIME.pin(url, "patchright")
+        assert server.RUNTIME.pinned_tier(url) == "patchright"
+        assert "pin-test.example" in server.RUNTIME.pins()
+    finally:
+        server.RUNTIME.host_tiers.clear()
+
+
+def test_token_wall_without_solver_stops_escalation():
+    from types import SimpleNamespace
+
+    from plague import Config, Plague
+    from plague.models import Challenge, ChallengeKind
+
+    import plague.mcp_server as server
+
+    token = Challenge(
+        vendor="recaptcha",
+        kind=ChallengeKind.TOKEN,
+        blocking=True,
+        confidence=1.0,
+        solvable=True,
+    )
+    risk = Challenge(
+        vendor="datadome",
+        kind=ChallengeKind.RISK,
+        blocking=True,
+        confidence=1.0,
+    )
+    no_solver = Plague(Config(solver="none"), engines={}, solver=None)
+    with_solver = Plague(
+        Config(solver="none"), engines={}, solver=object()
+    )
+
+    result = SimpleNamespace(challenge=token)
+    assert server._token_wall_without_solver(no_solver, result) is True
+    assert server._token_wall_without_solver(with_solver, result) is False
+    assert server._token_wall_without_solver(
+        no_solver, SimpleNamespace(challenge=risk)
+    ) is False
+
+
 def _server_params() -> StdioServerParameters:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    env["PLAGUE_PERSISTENT_PROFILES"] = "0"
     patched = ROOT / ".plague" / "lightpanda-src" / "zig-out" / "bin" / "lightpanda"
     if patched.is_file():
         env["PLAGUE_LIGHTPANDA_BIN"] = str(patched)

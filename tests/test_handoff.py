@@ -47,11 +47,15 @@ def test_config_reads_domain_lists(monkeypatch):
     monkeypatch.setenv("PLAGUE_SOLVE_DOMAINS", "example.com")
     monkeypatch.setenv("PLAGUE_POLICY", "block")
     monkeypatch.setenv("PLAGUE_SOLVE_MODE", "always")
+    monkeypatch.setenv("PLAGUE_AUTO_CLOAK", "1")
+    monkeypatch.setenv("PLAGUE_PERSISTENT_PROFILES", "1")
     config = Config.from_env()
     assert config.allowed_domains == ["example.com", "sub.example.org"]
     assert config.solve_domains == ["example.com"]
     assert config.policy == "block"
     assert config.solve_mode == "always"
+    assert config.auto_cloak is True
+    assert config.persistent_profiles is True
 
 
 def test_config_ignores_invalid_policy_values(monkeypatch):

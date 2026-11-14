@@ -52,7 +52,7 @@ from .harexport import (
 from .http import HAS_CURL_CFFI
 from .http import request as http_request
 from .interact import ActionError, parse_actions, run_actions
-from .models import Attempt, Capability, Profile
+from .models import Attempt, Capability, ChallengeKind, Profile
 from .observe import Observer
 from .recipes import (
     RecipeError,
@@ -94,8 +94,9 @@ so consecutive reads do not pay a process start.
 Reading and acting:
 - `read` is the fastest path: Lightpanda only, text and links, no rendering.
 - `fetch` retrieves a page. `tier=auto` uses the warm fast session and escalates
-  to Patchright, then Cloak, on a wall. Pass `actions` to click or fill before
-  extraction.
+  to Patchright, then Chrome, on a wall. Cloak is only in the auto chain when
+  `PLAGUE_AUTO_CLOAK=1`; otherwise use `tier="stealth"` explicitly. Pass
+  `actions` to click or fill before extraction.
 - `launch` opens a warm browser on a chosen tier, `patchright` for the no-license
   stealth-lite Chromium, `stealth` for Cloak, `chrome` for stock Chrome, or
   `fast` for Lightpanda, and makes it the active session.
@@ -143,6 +144,7 @@ def _config(
     proxy: str | None = None,
 ) -> Config:
     config = Config.from_env()
+    config.persistent_profiles = False
     if timeout_ms is not None:
         config.timeout_ms = timeout_ms
     if solve_widgets:
@@ -188,7 +190,13 @@ class _Runtime:
 
     def plague(self) -> Plague:
         if self._plague is None:
-            self._plague = Plague(Config.from_env())
+            config = Config.from_env()
+            # The MCP server is an interactive session: keep per-engine
+            # profiles so logins survive between calls. The library and CLI
+            # default to off so batch workers never fight over a profile.
+            if "PLAGUE_PERSISTENT_PROFILES" not in os.environ:
+                config.persistent_profiles = True
+            self._plague = Plague(config)
         return self._plague
 
     def config(self) -> Config:
@@ -392,6 +400,8 @@ async def doctor() -> dict[str, Any]:
         ),
         "idle_s": plague.config.mcp_idle_s,
         "keep_stealth_warm": plague.config.mcp_keep_stealth,
+        "auto_cloak": plague.config.auto_cloak,
+        "persistent_profiles": plague.config.persistent_profiles,
         "http_client": "curl_cffi" if HAS_CURL_CFFI else "httpx",
         "display": _display_mode(),
         "handoff_ozone": plague.config.handoff_ozone,
@@ -410,12 +420,16 @@ async def _escalate(
     timeout_ms: int,
     actions: list | None,
 ):
-    """Re-run a blocked fast-tier page on Patchright, then Cloak if needed.
+    """Escalate a blocked fast-tier page through the no-login heavy tiers.
 
-    Patchright is the no-license stealth-lite tier. Cloak is only tried when
-    Patchright is blocked or cannot launch, so a licensed Cloak install is not
-    the default cost of escalation.
+    Order is Patchright, then Cloak when ``PLAGUE_AUTO_CLOAK`` is on, then
+    Chrome. A token wall with no usable solver stops early, because a heavier
+    engine cannot buy a token either.
     """
+    tiers = [Tier.PATCHRIGHT]
+    if RUNTIME.config().auto_cloak:
+        tiers.append(Tier.STEALTH)
+    tiers.append(Tier.CHROME)
 
     async def run(tier: Tier):
         if RUNTIME.config().mcp_keep_stealth:
@@ -431,6 +445,7 @@ async def _escalate(
             except Exception:
                 await RUNTIME.drop(key)
                 raise
+        await RUNTIME.drop(_tier_key(tier))
         session = await plague.open_session(tier)
         try:
             return await plague.fetch_on(
@@ -442,29 +457,43 @@ async def _escalate(
         finally:
             await session.close()
 
-    try:
-        cold = await run(Tier.PATCHRIGHT)
-    except Exception:
-        cold = await run(Tier.STEALTH)
-
-    if _needs_escalation(cold):
+    last = None
+    for tier in tiers:
         try:
-            cloak = await run(Tier.STEALTH)
+            result = await run(tier)
         except Exception:
-            cloak = None
-        if cloak is not None:
-            cloak.attempts = [*cold.attempts, *cloak.attempts]
-            cloak.elapsed_ms += cold.elapsed_ms
-            cold = cloak
+            continue
+        if last is not None:
+            result.attempts = [*last.attempts, *result.attempts]
+            result.elapsed_ms += last.elapsed_ms
+        last = result
+        if not _needs_escalation(result):
+            break
+        if _token_wall_without_solver(plague, result):
+            break
+
+    if last is None:
+        raise PlagueError("no escalation engine could start")
 
     warm_attempt = (
         warm_result.attempts[0]
         if warm_result.attempts
         else _warm_attempt(warm_result)
     )
-    cold.attempts.insert(0, warm_attempt)
-    cold.elapsed_ms = warm_attempt.elapsed_ms + cold.elapsed_ms
-    return cold
+    last.attempts.insert(0, warm_attempt)
+    last.elapsed_ms = warm_attempt.elapsed_ms + last.elapsed_ms
+    return last
+
+
+def _token_wall_without_solver(plague: Plague, result) -> bool:
+    challenge = result.challenge
+    if challenge is None or not challenge.blocking:
+        return False
+    solver_ready = (
+        plague.solver is not None
+        and plague.config.solve_mode != "never"
+    )
+    return challenge.kind is ChallengeKind.TOKEN and not solver_ready
 
 
 def _warm_attempt(result):
@@ -547,6 +576,7 @@ async def fetch(
             headed=headed,
             proxy=proxy,
         )
+        config.persistent_profiles = False
         cold = Plague(config)
         try:
             result = await cold.fetch(
@@ -575,6 +605,7 @@ async def fetch(
     if tier_value is Tier.AUTO:
         pinned = RUNTIME.pinned_tier(url)
         warm_tier = Tier(pinned) if pinned else Tier.FAST
+    escalated = False
     try:
         try:
             async with RUNTIME.using(warm_tier) as session:
@@ -611,6 +642,7 @@ async def fetch(
                     timeout_ms=timeout_ms,
                     actions=parsed or None,
                 )
+                escalated = True
             except Exception as exc:
                 result.attempts.append(
                     Attempt(
@@ -630,6 +662,14 @@ async def fetch(
 
     if tier_value in (Tier.PATCHRIGHT, Tier.STEALTH, Tier.CHROME) and result.ok:
         RUNTIME.pin(url, tier_value.value)
+    if escalated and result.ok:
+        engine_tier = {
+            "patchright": "patchright",
+            "cloak": "stealth",
+            "chrome": "chrome",
+        }.get(result.engine or "")
+        if engine_tier:
+            RUNTIME.pin(url, engine_tier)
     if (
         RUNTIME.config().mcp_keep_stealth
         and result.ok
@@ -641,6 +681,7 @@ async def fetch(
     data["warm"] = True
     data["tier"] = _tier_key(warm_tier)
     data["pinned"] = tier_value is Tier.AUTO and warm_tier is not Tier.FAST
+    data["pinned_to"] = RUNTIME.pinned_tier(url)
     data["escalated"] = len(result.attempts) > 1
     return _trim(data, max_text_chars)
 
