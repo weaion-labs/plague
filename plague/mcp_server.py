@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import warnings
 from contextlib import asynccontextmanager
@@ -79,6 +80,7 @@ from .storage import (
 ROOT = Path(__file__).resolve().parents[1]
 PATCHED_BINARY = ROOT / ".plague" / "lightpanda-src" / "zig-out" / "bin" / "lightpanda"
 log = logging.getLogger("plague.mcp")
+PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Prefer the locally built Chrome-persona binary unless the caller chose one.
 if PATCHED_BINARY.is_file() and not os.environ.get("PLAGUE_LIGHTPANDA_BIN"):
@@ -92,9 +94,11 @@ so consecutive reads do not pay a process start.
 Reading and acting:
 - `read` is the fastest path: Lightpanda only, text and links, no rendering.
 - `fetch` retrieves a page. `tier=auto` uses the warm fast session and escalates
-  to Cloak on a wall. Pass `actions` to click or fill before extraction.
-- `launch` opens a warm browser on a chosen tier, `stealth` for Cloak, `chrome`
-  for stock Chrome, or `fast` for Lightpanda, and makes it the active session.
+  to Patchright, then Cloak, on a wall. Pass `actions` to click or fill before
+  extraction.
+- `launch` opens a warm browser on a chosen tier, `patchright` for the no-license
+  stealth-lite Chromium, `stealth` for Cloak, `chrome` for stock Chrome, or
+  `fast` for Lightpanda, and makes it the active session.
 - `snapshot` lists interactive elements with short refs such as `e3`.
 - `act` runs click/fill/press/select/check/scroll/back/goto actions on the warm
   session or on the headed handoff browser. Prefer refs over CSS selectors.
@@ -223,7 +227,7 @@ class _Runtime:
             await self._drop(key)
 
     async def _close_heavies(self, keep: str) -> None:
-        for key in ("stealth", "chrome"):
+        for key in ("patchright", "stealth", "chrome"):
             if key != keep and key in self._sessions:
                 await self._drop(key)
 
@@ -303,7 +307,7 @@ class _Runtime:
         return tier
 
     def pin(self, url: str, tier: str) -> None:
-        if tier not in {"stealth", "chrome"}:
+        if tier not in {"patchright", "stealth", "chrome"}:
             return
         host = (urlparse(url).hostname or "").lower()
         if not host:
@@ -406,31 +410,53 @@ async def _escalate(
     timeout_ms: int,
     actions: list | None,
 ):
-    """Re-run a blocked fast-tier page on Cloak.
+    """Re-run a blocked fast-tier page on Patchright, then Cloak if needed.
 
-    Auto escalation is read-only by default: the Cloak session is closed after
-    the fetch so it does not hold a paid concurrency seat. Set
-    PLAGUE_MCP_KEEP_STEALTH=1 to keep it warm for follow-up `act` calls.
+    Patchright is the no-license stealth-lite tier. Cloak is only tried when
+    Patchright is blocked or cannot launch, so a licensed Cloak install is not
+    the default cost of escalation.
     """
-    if RUNTIME.config().mcp_keep_stealth:
+
+    async def run(tier: Tier):
+        if RUNTIME.config().mcp_keep_stealth:
+            key = _tier_key(tier)
+            try:
+                async with RUNTIME.using(key) as session:
+                    return await plague.fetch_on(
+                        session,
+                        url,
+                        timeout_ms=timeout_ms,
+                        actions=actions,
+                    )
+            except Exception:
+                await RUNTIME.drop(key)
+                raise
+        session = await plague.open_session(tier)
         try:
-            async with RUNTIME.using("stealth") as session:
-                cold = await plague.fetch_on(
-                    session,
-                    url,
-                    timeout_ms=timeout_ms,
-                    actions=actions,
-                )
+            return await plague.fetch_on(
+                session,
+                url,
+                timeout_ms=timeout_ms,
+                actions=actions,
+            )
+        finally:
+            await session.close()
+
+    try:
+        cold = await run(Tier.PATCHRIGHT)
+    except Exception:
+        cold = await run(Tier.STEALTH)
+
+    if _needs_escalation(cold):
+        try:
+            cloak = await run(Tier.STEALTH)
         except Exception:
-            await RUNTIME.drop("stealth")
-            raise
-    else:
-        cold = await plague.fetch(
-            url,
-            tier=Tier.STEALTH,
-            timeout_ms=timeout_ms,
-            actions=actions,
-        )
+            cloak = None
+        if cloak is not None:
+            cloak.attempts = [*cold.attempts, *cloak.attempts]
+            cloak.elapsed_ms += cold.elapsed_ms
+            cold = cloak
+
     warm_attempt = (
         warm_result.attempts[0]
         if warm_result.attempts
@@ -479,7 +505,7 @@ async def fetch(
 
     Args:
         url: Page to fetch.
-        tier: auto, fast, stealth, or chrome.
+        tier: auto, fast, patchright, stealth, or chrome.
         timeout_ms: Navigation timeout in milliseconds.
         screenshot: Optional path for a full-page PNG. Forces a visual engine.
         solve_widgets: Also solve token widgets on pages that are not blocked.
@@ -548,8 +574,7 @@ async def fetch(
     warm_tier = tier_value
     if tier_value is Tier.AUTO:
         pinned = RUNTIME.pinned_tier(url)
-        if pinned:
-            warm_tier = Tier(pinned)
+        warm_tier = Tier(pinned) if pinned else Tier.FAST
     try:
         try:
             async with RUNTIME.using(warm_tier) as session:
@@ -603,10 +628,14 @@ async def fetch(
     finally:
         plague.config.solve_present = old_solve_present
 
-    if tier_value in (Tier.STEALTH, Tier.CHROME) and result.ok:
+    if tier_value in (Tier.PATCHRIGHT, Tier.STEALTH, Tier.CHROME) and result.ok:
         RUNTIME.pin(url, tier_value.value)
-    if RUNTIME.config().mcp_keep_stealth and result.ok and result.engine == "cloak":
-        RUNTIME.pin(url, "stealth")
+    if (
+        RUNTIME.config().mcp_keep_stealth
+        and result.ok
+        and result.engine in {"patchright", "cloak"}
+    ):
+        RUNTIME.pin(url, result.engine)
 
     data = result_dict(result, include_html=include_html)
     data["warm"] = True
@@ -687,6 +716,7 @@ async def launch(
     tier: str = "stealth",
     url: str | None = None,
     profile_dir: str | None = None,
+    profile: str | None = None,
     headed: bool | None = None,
     proxy: str | None = None,
     storage: str | None = None,
@@ -694,10 +724,11 @@ async def launch(
 ) -> dict[str, Any]:
     """Open a warm browser on a chosen tier and make it the active session.
 
-    `tier="stealth"` opens CloakBrowser, `chrome` opens stock Chrome, and `fast`
-    opens Lightpanda. Follow-up `act`, `snapshot`, `network`, and `screenshot`
-    calls default to the active tier. Use `profile_dir` for a per-program
-    identity, or `storage` to load saved cookies.
+    `tier="stealth"` opens CloakBrowser, `patchright` opens the no-license
+    patched Chromium, `chrome` opens stock Chrome, and `fast` opens Lightpanda.
+    Follow-up `act`, `snapshot`, `network`, and `screenshot` calls default to the
+    active tier. Use `profile` for a named per-program identity, `profile_dir`
+    for an explicit directory, or `storage` to load saved cookies.
     """
     await RUNTIME.sweep()
     if tier == "handoff":
@@ -709,6 +740,13 @@ async def launch(
             RUNTIME.check_url(url)
         except PlagueError as exc:
             return _error(str(exc))
+
+    if profile and not profile_dir:
+        if not PROFILE_NAME.match(profile):
+            return _error(
+                "profile name must match [a-z0-9][a-z0-9_-]{0,63}"
+            )
+        profile_dir = str(project_cache_dir() / "profiles" / profile)
 
     tier_value = Tier(tier)
     key = _tier_key(tier_value)
@@ -755,7 +793,7 @@ async def launch(
     except Exception as exc:
         return _error(f"{type(exc).__name__}: {exc}")
 
-    if key in {"stealth", "chrome"} and result.ok:
+    if key in {"patchright", "stealth", "chrome"} and result.ok:
         RUNTIME.pin(url, key)
     data = result_dict(result)
     data["tier"] = key
@@ -1577,7 +1615,7 @@ async def storage_load(
             )
     except Exception as exc:
         return _error(f"{type(exc).__name__}: {exc}")
-    if key in {"stealth", "chrome"} and result.ok:
+    if key in {"patchright", "stealth", "chrome"} and result.ok:
         RUNTIME.pin(url, key)
     data = result_dict(result)
     data["storage"] = name

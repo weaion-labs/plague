@@ -45,8 +45,9 @@ from .text import html_to_title
 log = logging.getLogger("plague.router")
 
 CHAINS: dict[Tier, tuple[str, ...]] = {
-    Tier.AUTO: ("lightpanda", "cloak", "chrome"),
+    Tier.AUTO: ("lightpanda", "patchright", "cloak", "chrome"),
     Tier.FAST: ("lightpanda",),
+    Tier.PATCHRIGHT: ("patchright",),
     Tier.STEALTH: ("cloak",),
     Tier.CHROME: ("chrome",),
 }

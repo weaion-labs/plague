@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a Patchright engine and `tier="patchright"`: patched Playwright
+  Chromium with runtime stealth, no license server, no seat limit. Auto
+  escalation now runs Lightpanda, then Patchright, then Cloak, then Chrome.
+- Added named per-program profiles to `launch` with `profile="name"`, stored
+  under `.plague/profiles/`.
+- Fixed auto escalation never running when the fast tier was not pinned.
+
 - Added `read` for a fast Lightpanda-only text and link read, with a hint to
   escalate when the page needs rendering.
 - Added `launch` to open Cloak, Chrome, or Lightpanda as a first-class MCP

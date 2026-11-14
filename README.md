@@ -77,19 +77,19 @@ system.
 
 ## Engine capability matrix
 
-| | Lightpanda | CloakBrowser | Chrome |
-|---|---|---|---|
-| Engine | Zig + V8, no layout | Patched Chromium | Chromium |
-| Relative speed | ~9x faster | Chrome | Chrome |
-| Relative memory | ~16x less | Chrome | Chrome |
-| Real layout / screenshots | No (placeholder PNG) | Yes | Yes |
-| PDF, video, tracing | No | Yes | Yes |
-| Extensions, downloads | No | Yes | Yes |
-| Network interception | Yes | Yes | Yes |
-| Cookie and storage state | Yes | Yes | Yes |
-| Looks like Chrome | No | Yes | Stock automation tells |
-| Token CAPTCHA solving | No (escalates) | Yes | Yes |
-| Best use | Bulk discovery, extraction | Protected targets | Dev, CI, visual checks |
+| | Lightpanda | Patchright | CloakBrowser | Chrome |
+|---|---|---|---|---|
+| Engine | Zig + V8, no layout | Patched Playwright Chromium | Patched Chromium | Chromium |
+| Relative speed | ~9x faster | Chrome | Chrome | Chrome |
+| Relative memory | ~16x less | Chrome | Chrome | Chrome |
+| Real layout / screenshots | No (placeholder PNG) | Yes | Yes | Yes |
+| PDF, video, tracing | No | Yes | Yes | Yes |
+| Extensions, downloads | No | Yes | Yes | Yes |
+| Network interception | Yes | Yes | Yes | Yes |
+| Cookie and storage state | Yes | Yes | Yes | Yes |
+| Looks like Chrome | No | Runtime stealth, no license | Yes | Stock automation tells |
+| Token CAPTCHA solving | No (escalates) | Yes | Yes | Yes |
+| Best use | Bulk discovery, extraction | No-login interactive work | Protected targets | Dev, CI, visual checks |
 
 Lightpanda's speed and memory numbers are vendor benchmarks (933 pages on an
 AWS m5.large). They describe the happy path. The metric that matters is
@@ -160,6 +160,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 pip install -e ".[impersonate]"   # optional: browser-impersonated API replay
+pip install -e ".[stealth]"       # optional: Patchright no-license stealth tier
 playwright install chromium
 
 # Lightpanda nightly for this platform
@@ -182,6 +183,9 @@ plague fetch https://example.com
 
 # Fast only, no escalation
 plague fetch https://example.com --tier fast
+
+# No-license stealth-lite Chromium
+plague fetch https://protected.example --tier patchright --headed
 
 # Stealth only, with a proxy and humanized input
 plague fetch https://protected.example --tier stealth \
@@ -274,7 +278,7 @@ Tools exposed to the agent:
 | `plague_doctor` | Engine availability, active solver, policy, warm sessions, handoff state |
 | `plague_fetch` | Fetch a URL through the tier router, with optional actions |
 | `plague_read` | Fast Lightpanda-only text and links, no rendering |
-| `plague_launch` | Open Cloak, Chrome, or Lightpanda and make it the active session |
+| `plague_launch` | Open Cloak, Patchright, Chrome, or Lightpanda and make it the active session |
 | `plague_captcha` | Inspect the current challenge, or solve it on demand |
 | `plague_snapshot` | Interactive elements as compact refs such as `e3` |
 | `plague_act` | Click, fill, press, select, scroll, back, goto on refs or selectors |
@@ -320,15 +324,18 @@ a syntax error, and a ref cannot silently point at a different element after a
 CSS class changes. Refs are only valid until the page navigates or the DOM
 changes, so take a fresh `snapshot` after a step that mutates the page.
 
-`tier=stealth` and `tier=chrome` also keep a warm session, one heavy session at
-a time. `tier=auto` uses the fast session and falls back to a cold Cloak fetch
-on a wall, which keeps memory and Cloak concurrency seats low. For an
-interactive flow on a protected page, call `fetch` with `tier="stealth"` first
-so the session stays warm for `act`. Set `PLAGUE_MCP_KEEP_STEALTH=1` if you want
-auto escalation to keep it warm too.
+`tier=patchright`, `tier=stealth`, and `tier=chrome` also keep a warm session,
+one heavy session at a time. `tier=auto` uses the fast session and falls back to
+Patchright, then Cloak, on a wall, which keeps memory and Cloak concurrency seats
+low. For an interactive flow on a protected page, call `fetch` with
+`tier="patchright"` for the no-license stealth-lite tier, or `tier="stealth"`
+for Cloak, so the session stays warm for `act`. Set
+`PLAGUE_MCP_KEEP_STEALTH=1` if you want auto escalation to keep the heavy
+session warm too.
 
-After a successful `tier="stealth"` or `tier="chrome"` fetch, that host stays
-pinned to the heavy tier for `PLAGUE_HOST_TIER_TTL` seconds (default 600).
+After a successful `tier="patchright"`, `tier="stealth"`, or `tier="chrome"`
+fetch, that host stays pinned to the heavy tier for `PLAGUE_HOST_TIER_TTL`
+seconds (default 600).
 `tier="auto"` then reuses the same session, so an authenticated flow keeps its
 cookies instead of dropping back to Lightpanda. `release(all_sessions=True)`
 clears the pins.
@@ -670,7 +677,7 @@ All settings can come from the environment.
 | `PLAGUE_ALLOWED_DOMAINS` | none | Comma or space separated navigation allowlist |
 | `PLAGUE_SOLVE_DOMAINS` | none | Domains where the token solver may run |
 | `PLAGUE_MCP_IDLE_S` | 180 | Idle seconds before the MCP server closes a warm session |
-| `PLAGUE_MCP_KEEP_STEALTH` | false | Keep the auto-escalated Cloak session warm for follow-up `act` calls |
+| `PLAGUE_MCP_KEEP_STEALTH` | false | Keep the auto-escalated Patchright or Cloak session warm for follow-up `act` calls |
 | `PLAGUE_HOST_TIER_TTL` | 600 | Seconds a host stays pinned to stealth or chrome after an explicit fetch |
 | `PLAGUE_SCREENSHOT_DIR` | .plague/screenshots | Default output directory for `screenshot` |
 | `PLAGUE_HANDOFF_PORT` | 0 | Fixed CDP port for the headed handoff, or 0 for a free port |
@@ -694,13 +701,14 @@ The tier chains:
 
 | Tier | Chain |
 |---|---|
-| `auto` | lightpanda -> cloak -> chrome |
+| `auto` | lightpanda -> patchright -> cloak -> chrome |
 | `fast` | lightpanda |
+| `patchright` | patchright |
 | `stealth` | cloak |
 | `chrome` | chrome |
 
 A screenshot request filters out engines without visual rendering, so `auto`
-will skip Lightpanda and go straight to Cloak.
+will skip Lightpanda and start with Patchright.
 
 ## Project layout
 
@@ -719,6 +727,7 @@ plague/
   mcp_server.py      project-local stdio MCP server
   engines/
     lightpanda.py    process + CDP client
+    patchright.py    patched Playwright, no-license stealth
     cloak.py         CloakBrowser wrapper
     chrome.py        Playwright Chromium/Chrome
     base.py          Session, Nav, capabilities, proxy handling

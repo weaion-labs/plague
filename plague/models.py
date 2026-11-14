@@ -12,6 +12,7 @@ class Tier(str, Enum):
 
     AUTO = "auto"
     FAST = "fast"
+    PATCHRIGHT = "patchright"
     STEALTH = "stealth"
     CHROME = "chrome"
 

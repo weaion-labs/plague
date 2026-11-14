@@ -154,6 +154,7 @@ def test_mcp_server_lists_tools_and_reports_doctor():
     assert "engines" in data
     assert {engine["name"] for engine in data["engines"]} == {
         "lightpanda",
+        "patchright",
         "cloak",
         "chrome",
     }

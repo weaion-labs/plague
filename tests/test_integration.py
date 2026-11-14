@@ -185,3 +185,35 @@ def test_fetch_on_solves_and_reuses_the_open_session():
     assert second.solved is False
     assert "Welcome" in second.text
     assert len(solver.calls) == 1
+
+
+@pytest.mark.integration
+def test_patchright_engine_launches_with_runtime_stealth():
+    from plague.engines.patchright import PatchrightEngine
+
+    config = Config(headless=True, humanize=False, chrome_executable=find_chrome())
+    engine = PatchrightEngine(config)
+    available, reason = engine.availability()
+    if not available:
+        pytest.skip(reason)
+
+    async def run():
+        session = await engine.open(config.profile())
+        try:
+            await session.goto(
+                "data:text/html,<title>Patchright</title><h1>ok</h1>",
+                wait_until="domcontentloaded",
+            )
+            return await session.title(), await session.evaluate(
+                "navigator.webdriver"
+            )
+        finally:
+            await session.close()
+
+    try:
+        title, webdriver = asyncio.run(run())
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"patchright unavailable: {exc}")
+
+    assert title == "Patchright"
+    assert webdriver is False
